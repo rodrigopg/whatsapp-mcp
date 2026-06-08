@@ -56,20 +56,40 @@ WhatsApp has been migrating contacts from phone-based JIDs (`+55...@s.whatsapp.n
 
 ## Installation
 
-### Prerequisites
+### One-line install (macOS / Linux / WSL)
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/rodrigopg/whatsapp-mcp/main/install.sh | bash
+```
+
+The script:
+- checks Go 1.21+, Python 3.9+, uv (installs uv if missing)
+- clones the repo to `~/.whatsapp-mcp`
+- compiles the Go bridge
+- writes `claude_desktop_config.json` / `~/.cursor/mcp.json` automatically
+- creates a `start-bridge.sh` launcher
+- on macOS: writes a launchd plist for optional auto-start
+
+After install, run `~/.whatsapp-mcp/start-bridge.sh`, open **http://localhost:8080/qr** in your browser, scan the QR, then restart Claude Desktop or Cursor.
+
+---
+
+### Manual install
+
+#### Prerequisites
 
 - Go 1.21+
-- Python 3.6+
+- Python 3.9+
 - Claude Desktop (or Cursor)
-- UV (Python package manager): `curl -LsSf https://astral.sh/uv/install.sh | sh`
-- FFmpeg *(optional)* — only needed to auto-convert audio to Opus for voice messages
+- UV: `curl -LsSf https://astral.sh/uv/install.sh | sh`
+- FFmpeg *(optional)* — auto-converts audio to Opus for voice messages
 
-### Steps
+#### Steps
 
 1. **Clone this repository**
 
    ```bash
-   git clone https://github.com/YOUR_USERNAME/whatsapp-mcp.git
+   git clone https://github.com/rodrigopg/whatsapp-mcp.git
    cd whatsapp-mcp
    ```
 
@@ -80,7 +100,7 @@ WhatsApp has been migrating contacts from phone-based JIDs (`+55...@s.whatsapp.n
    go run main.go
    ```
 
-   On first run, scan the QR code with your WhatsApp mobile app. On macOS the QR is also saved to `/tmp/whatsapp-qr.png` and opened in Preview automatically.
+   On first run, open **http://localhost:8080/qr** in your browser and scan the QR code with WhatsApp (Settings → Linked Devices → Link a Device). The page auto-refreshes when a new code is generated. On macOS the QR is also saved to `/tmp/whatsapp-qr.png` and opened in Preview.
 
 3. **Connect to the MCP server**
 

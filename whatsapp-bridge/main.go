@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -33,6 +34,13 @@ import (
 	waLog "go.mau.fi/whatsmeow/util/log"
 	"google.golang.org/protobuf/proto"
 )
+
+// qrState holds the latest QR code PNG in memory so /qr can serve it.
+var qrState struct {
+	sync.RWMutex
+	png       []byte // nil = not waiting for QR (already authenticated or not yet started)
+	connected bool
+}
 
 // Message represents a chat message for our client
 type Message struct {
@@ -1031,6 +1039,57 @@ func extractDirectPathFromURL(url string) string {
 
 // Start a REST API server to expose the WhatsApp client functionality
 func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, port int) {
+	// /qr — serves the current QR code as PNG (during pairing) or a status page (when connected).
+	// Open http://localhost:8080/qr in a browser to scan the QR code on first setup.
+	http.HandleFunc("/qr", func(w http.ResponseWriter, r *http.Request) {
+		qrState.RLock()
+		png := qrState.png
+		connected := qrState.connected
+		qrState.RUnlock()
+
+		if connected {
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			fmt.Fprint(w, `<!DOCTYPE html><html><body style="font-family:sans-serif;text-align:center;padding:4rem">
+<h2 style="color:#25d366">✓ WhatsApp connected</h2>
+<p>You can close this tab.</p></body></html>`)
+			return
+		}
+		if png == nil {
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			w.Header().Set("Refresh", "2")
+			fmt.Fprint(w, `<!DOCTYPE html><html><body style="font-family:sans-serif;text-align:center;padding:4rem">
+<h2>Waiting for QR code…</h2><p>This page refreshes automatically.</p></body></html>`)
+			return
+		}
+		// Serve an auto-refreshing HTML page that embeds the QR as a data URI.
+		// Refreshes every 20 s so a new QR is shown if the first one expires.
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		fmt.Fprintf(w, `<!DOCTYPE html><html><head>
+<meta http-equiv="refresh" content="20">
+<style>body{font-family:sans-serif;text-align:center;padding:2rem;background:#f0f0f0}
+img{border:8px solid white;border-radius:8px;box-shadow:0 4px 20px rgba(0,0,0,.2)}</style>
+</head><body>
+<h2>Scan with WhatsApp to connect</h2>
+<p>Open WhatsApp → Settings → Linked Devices → Link a Device</p>
+<img src="/qr.png" width="300" height="300" alt="QR Code">
+<p style="color:#888;font-size:.85rem">Page refreshes every 20 s</p>
+</body></html>`)
+	})
+
+	// /qr.png — raw PNG for embedding or direct download
+	http.HandleFunc("/qr.png", func(w http.ResponseWriter, r *http.Request) {
+		qrState.RLock()
+		png := qrState.png
+		qrState.RUnlock()
+		if png == nil {
+			http.Error(w, "QR not available", http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "image/png")
+		w.Header().Set("Cache-Control", "no-store")
+		w.Write(png)
+	})
+
 	// Handler for sending messages
 	http.HandleFunc("/api/send", func(w http.ResponseWriter, r *http.Request) {
 		// Only allow POST requests
@@ -1256,6 +1315,15 @@ func main() {
 	// Create channel to track connection success
 	connected := make(chan bool, 1)
 
+	// Start REST API server early so /qr is available during the QR pairing flow.
+	bridgePort := 8080
+	if portStr := os.Getenv("WHATSAPP_BRIDGE_PORT"); portStr != "" {
+		if p, err := fmt.Sscanf(portStr, "%d", &bridgePort); p != 1 || err != nil {
+			bridgePort = 8080
+		}
+	}
+	startRESTServer(client, messageStore, bridgePort)
+
 	// Connect to WhatsApp
 	if client.Store.ID == nil {
 		// No ID stored, this is a new client, need to pair with phone
@@ -1266,19 +1334,33 @@ func main() {
 			return
 		}
 
+		fmt.Printf("\nOpen http://localhost:%d/qr in your browser to scan the QR code.\n", bridgePort)
+
 		// Print QR code for pairing with phone
 		for evt := range qrChan {
 			if evt.Event == "code" {
 				fmt.Println("\nScan this QR code with your WhatsApp app:")
 				qrterminal.GenerateHalfBlock(evt.Code, qrterminal.L, os.Stdout)
-				// Also save as a PNG so you can scan it from the screen if the terminal version is hard to read.
+
+				// Generate PNG and store in memory for /qr endpoint.
+				if pngBytes, err := goqr.Encode(evt.Code, goqr.Medium, 512); err == nil {
+					qrState.Lock()
+					qrState.png = pngBytes
+					qrState.connected = false
+					qrState.Unlock()
+				}
+
+				// Also save to disk for convenience.
 				qrFile := "/tmp/whatsapp-qr.png"
 				if err := goqr.WriteFile(evt.Code, goqr.Medium, 512, qrFile); err == nil {
 					fmt.Printf("\nQR also saved as image: %s\n", qrFile)
-					// Open in Preview automatically on macOS.
 					_ = exec.Command("open", qrFile).Start()
 				}
 			} else if evt.Event == "success" {
+				qrState.Lock()
+				qrState.png = nil
+				qrState.connected = true
+				qrState.Unlock()
 				connected <- true
 				break
 			}
@@ -1299,6 +1381,9 @@ func main() {
 			logger.Errorf("Failed to connect: %v", err)
 			return
 		}
+		qrState.Lock()
+		qrState.connected = true
+		qrState.Unlock()
 		connected <- true
 	}
 
@@ -1314,15 +1399,6 @@ func main() {
 
 	// Merge any chats stored under LID JIDs into their PN equivalents.
 	migrateLIDChats(client, messageStore, logger)
-
-	// Start REST API server (port configurable via WHATSAPP_BRIDGE_PORT env var)
-	bridgePort := 8080
-	if portStr := os.Getenv("WHATSAPP_BRIDGE_PORT"); portStr != "" {
-		if p, err := fmt.Sscanf(portStr, "%d", &bridgePort); p != 1 || err != nil {
-			bridgePort = 8080
-		}
-	}
-	startRESTServer(client, messageStore, bridgePort)
 
 	// Create a channel to keep the main goroutine alive
 	exitChan := make(chan os.Signal, 1)
