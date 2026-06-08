@@ -880,6 +880,28 @@ func (store *MessageStore) GetMediaInfo(id, chatJID string) (string, string, str
 	return mediaType, filename, url, mediaKey, fileSHA256, fileEncSHA256, fileLength, err
 }
 
+// safeMediaPath builds a media file path inside chatDir, rejecting any message
+// ID or filename that could escape the directory via path traversal. Both
+// components are partly attacker-influenced (filename comes from the message,
+// the retry message ID comes from the phone's response), so they are reduced to
+// their base name and checked for separators / dot segments.
+func safeMediaPath(chatDir, messageID, filename string) (string, error) {
+	id := filepath.Base(messageID)
+	name := filepath.Base(filename)
+	for _, c := range []string{id, name} {
+		if c == "" || c == "." || c == ".." || strings.ContainsAny(c, `/\`) {
+			return "", fmt.Errorf("unsafe media path component: %q", c)
+		}
+	}
+	joined := filepath.Join(chatDir, id+"_"+name)
+	// Defense in depth: ensure the cleaned result is still under chatDir.
+	rel, err := filepath.Rel(chatDir, joined)
+	if err != nil || strings.HasPrefix(rel, "..") {
+		return "", fmt.Errorf("media path escapes chat directory: %q", joined)
+	}
+	return joined, nil
+}
+
 // MediaDownloader implements the whatsmeow.DownloadableMessage interface
 type MediaDownloader struct {
 	URL           string
@@ -967,7 +989,10 @@ func downloadMedia(client *whatsmeow.Client, messageStore *MessageStore, message
 	// stored filename is derived from sync time and collides across messages
 	// received in the same second within a chat (the cache check below would
 	// otherwise return the wrong message's bytes).
-	localPath = fmt.Sprintf("%s/%s_%s", chatDir, messageID, filename)
+	localPath, err = safeMediaPath(chatDir, messageID, filename)
+	if err != nil {
+		return false, "", "", "", err
+	}
 
 	// Get absolute path
 	absPath, err := filepath.Abs(localPath)
@@ -1862,7 +1887,11 @@ func handleMediaRetry(client *whatsmeow.Client, messageStore *MessageStore, evt 
 		fmt.Printf("MEDIA RETRY %s: mkdir failed: %v\n", evt.MessageID, err)
 		return
 	}
-	localPath := fmt.Sprintf("%s/%s_%s", chatDir, evt.MessageID, entry.filename)
+	localPath, err := safeMediaPath(chatDir, evt.MessageID, entry.filename)
+	if err != nil {
+		fmt.Printf("MEDIA RETRY %s: %v\n", evt.MessageID, err)
+		return
+	}
 	if err := os.WriteFile(localPath, data, 0644); err != nil {
 		fmt.Printf("MEDIA RETRY %s: write failed: %v\n", evt.MessageID, err)
 		return
