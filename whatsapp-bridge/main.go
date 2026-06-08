@@ -29,6 +29,7 @@ import (
 	"go.mau.fi/whatsmeow"
 	waProto "go.mau.fi/whatsmeow/binary/proto"
 	"go.mau.fi/whatsmeow/proto/waCompanionReg"
+	"go.mau.fi/whatsmeow/proto/waMmsRetry"
 	"go.mau.fi/whatsmeow/store"
 	"go.mau.fi/whatsmeow/store/sqlstore"
 	"go.mau.fi/whatsmeow/types"
@@ -1200,6 +1201,34 @@ img{border:8px solid white;border-radius:8px;box-shadow:0 4px 20px rgba(0,0,0,.2
 		})
 	})
 
+	// Handler for requesting media retry (re-upload of expired media from the phone)
+	http.HandleFunc("/api/mediaretry", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		var req DownloadMediaRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "Invalid request format", http.StatusBadRequest)
+			return
+		}
+		if req.MessageID == "" || req.ChatJID == "" {
+			http.Error(w, "Message ID and Chat JID are required", http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		if err := requestMediaRetry(client, messageStore, req.MessageID, req.ChatJID); err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"success": false, "message": fmt.Sprintf("Failed to request media retry: %s", err.Error()),
+			})
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"success": true, "message": "Media retry requested; watch bridge log for response",
+		})
+	})
+
 	// Handler for creating a group
 	http.HandleFunc("/api/create_group", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
@@ -1324,6 +1353,11 @@ func main() {
 		case *events.HistorySync:
 			// Process history sync events
 			handleHistorySync(client, messageStore, v, logger)
+
+		case *events.MediaRetry:
+			// Phone responded to a media retry request with a (hopefully) fresh
+			// directPath for media whose CDN reference had expired.
+			handleMediaRetry(client, messageStore, v, logger)
 
 		case *events.Connected:
 			logger.Infof("Connected to WhatsApp")
@@ -1703,6 +1737,137 @@ func requestHistorySync(client *whatsmeow.Client) {
 	} else {
 		fmt.Println("History sync requested. Waiting for server response...")
 	}
+}
+
+// mediaRetryCache holds the info needed to decrypt + download a media retry
+// response, keyed by message ID. Populated when a retry receipt is sent.
+type mediaRetryEntry struct {
+	chatJID       string
+	mediaKey      []byte
+	fileSHA256    []byte
+	fileEncSHA256 []byte
+	fileLength    uint64
+	mediaType     string
+	filename      string
+}
+
+var mediaRetryCache = struct {
+	sync.Mutex
+	m map[string]mediaRetryEntry
+}{m: make(map[string]mediaRetryEntry)}
+
+// requestMediaRetry asks the phone to re-upload media whose CDN reference has
+// expired (download returns 403). The phone responds with an events.MediaRetry
+// carrying a fresh directPath, handled by handleMediaRetry.
+func requestMediaRetry(client *whatsmeow.Client, messageStore *MessageStore, messageID, chatJID string) error {
+	mediaType, filename, _, mediaKey, fileSHA256, fileEncSHA256, fileLength, err := messageStore.GetMediaInfo(messageID, chatJID)
+	if err != nil {
+		return fmt.Errorf("failed to get media info: %v", err)
+	}
+	if len(mediaKey) == 0 {
+		return fmt.Errorf("no media key for message")
+	}
+
+	jid, err := types.ParseJID(chatJID)
+	if err != nil {
+		return fmt.Errorf("invalid chat jid: %v", err)
+	}
+
+	// Read sender + direction: groups require the participant JID in the retry
+	// receipt, and from-me messages must be flagged correctly.
+	var sender string
+	var isFromMe bool
+	err = messageStore.db.QueryRow(
+		"SELECT sender, is_from_me FROM messages WHERE id = ? AND chat_jid = ?",
+		messageID, chatJID,
+	).Scan(&sender, &isFromMe)
+	if err != nil {
+		return fmt.Errorf("failed to read message sender: %v", err)
+	}
+
+	isGroup := jid.Server == types.GroupServer
+	senderJID := jid
+	if isGroup && sender != "" {
+		senderJID = types.JID{User: sender, Server: types.DefaultUserServer}
+	}
+
+	mediaRetryCache.Lock()
+	mediaRetryCache.m[messageID] = mediaRetryEntry{
+		chatJID: chatJID, mediaKey: mediaKey, fileSHA256: fileSHA256,
+		fileEncSHA256: fileEncSHA256, fileLength: fileLength,
+		mediaType: mediaType, filename: filename,
+	}
+	mediaRetryCache.Unlock()
+
+	info := &types.MessageInfo{
+		ID: messageID,
+		MessageSource: types.MessageSource{
+			Chat:     jid,
+			Sender:   senderJID,
+			IsFromMe: isFromMe,
+			IsGroup:  isGroup,
+		},
+	}
+	return client.SendMediaRetryReceipt(context.Background(), info, mediaKey)
+}
+
+// handleMediaRetry processes the phone's response to a media retry request: on
+// success it downloads with the fresh directPath and persists the file so the
+// normal download/transcription path can use it.
+func handleMediaRetry(client *whatsmeow.Client, messageStore *MessageStore, evt *events.MediaRetry, logger waLog.Logger) {
+	mediaRetryCache.Lock()
+	entry, ok := mediaRetryCache.m[evt.MessageID]
+	mediaRetryCache.Unlock()
+	if !ok {
+		logger.Warnf("media retry response for unknown message %s", evt.MessageID)
+		return
+	}
+
+	retryData, err := whatsmeow.DecryptMediaRetryNotification(evt, entry.mediaKey)
+	if err != nil {
+		fmt.Printf("MEDIA RETRY %s: FAILED to decrypt: %v\n", evt.MessageID, err)
+		return
+	}
+	if retryData.GetResult() != waMmsRetry.MediaRetryNotification_SUCCESS {
+		fmt.Printf("MEDIA RETRY %s: result=%s (media not available on phone)\n",
+			evt.MessageID, retryData.GetResult())
+		return
+	}
+
+	newPath := retryData.GetDirectPath()
+	fmt.Printf("MEDIA RETRY %s: SUCCESS, fresh directPath=%s\n", evt.MessageID, newPath)
+
+	var waMediaType whatsmeow.MediaType
+	switch entry.mediaType {
+	case "image":
+		waMediaType = whatsmeow.MediaImage
+	case "video":
+		waMediaType = whatsmeow.MediaVideo
+	case "audio":
+		waMediaType = whatsmeow.MediaAudio
+	case "document":
+		waMediaType = whatsmeow.MediaDocument
+	}
+
+	data, err := client.DownloadMediaWithPath(context.Background(), newPath,
+		entry.fileEncSHA256, entry.fileSHA256, entry.mediaKey,
+		int(entry.fileLength), waMediaType, "")
+	if err != nil {
+		fmt.Printf("MEDIA RETRY %s: download with fresh path failed: %v\n", evt.MessageID, err)
+		return
+	}
+
+	chatDir := fmt.Sprintf("store/%s", strings.ReplaceAll(entry.chatJID, ":", "_"))
+	if err := os.MkdirAll(chatDir, 0755); err != nil {
+		fmt.Printf("MEDIA RETRY %s: mkdir failed: %v\n", evt.MessageID, err)
+		return
+	}
+	localPath := fmt.Sprintf("%s/%s_%s", chatDir, evt.MessageID, entry.filename)
+	if err := os.WriteFile(localPath, data, 0644); err != nil {
+		fmt.Printf("MEDIA RETRY %s: write failed: %v\n", evt.MessageID, err)
+		return
+	}
+	fmt.Printf("MEDIA RETRY %s: recovered %d bytes -> %s\n", evt.MessageID, len(data), localPath)
 }
 
 // analyzeOggOpus tries to extract duration and generate a simple waveform from an Ogg Opus file
