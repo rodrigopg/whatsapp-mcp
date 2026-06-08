@@ -522,12 +522,109 @@ func extractMediaInfo(msg *waProto.Message) (mediaType string, filename string, 
 	return "", "", "", nil, nil, nil, 0
 }
 
+// resolveToPN converts a LID JID (xxxx@lid) to its PN (phone number) JID using
+// the local whatsmeow LID store. Returns the input unchanged for non-LID JIDs.
+func resolveToPN(client *whatsmeow.Client, jid types.JID) types.JID {
+	if client == nil || client.Store == nil || client.Store.LIDs == nil {
+		return jid
+	}
+	if jid.Server != types.HiddenUserServer {
+		return jid
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	pn, err := client.Store.LIDs.GetPNForLID(ctx, jid)
+	if err != nil || pn.IsEmpty() {
+		return jid
+	}
+	return pn
+}
+
+// migrateLIDChats merges any chat stored under a LID JID into its PN JID.
+// Idempotent: chats with no known mapping are left for the next startup.
+func migrateLIDChats(client *whatsmeow.Client, store *MessageStore, logger waLog.Logger) {
+	if client == nil || store == nil || store.db == nil {
+		return
+	}
+	rows, err := store.db.Query("SELECT jid, name, last_message_time FROM chats WHERE jid LIKE '%@" + types.HiddenUserServer + "'")
+	if err != nil {
+		logger.Warnf("LID migration: failed to list LID chats: %v", err)
+		return
+	}
+	type lidChat struct {
+		jid             string
+		name            string
+		lastMessageTime time.Time
+	}
+	var lidChats []lidChat
+	for rows.Next() {
+		var c lidChat
+		if err := rows.Scan(&c.jid, &c.name, &c.lastMessageTime); err == nil {
+			lidChats = append(lidChats, c)
+		}
+	}
+	rows.Close()
+	if len(lidChats) == 0 {
+		return
+	}
+	logger.Infof("LID migration: found %d chat(s) under @lid, attempting to merge", len(lidChats))
+	tx, err := store.db.Begin()
+	if err != nil {
+		logger.Warnf("LID migration: cannot start tx: %v", err)
+		return
+	}
+	merged, skipped := 0, 0
+	for _, c := range lidChats {
+		lidJID, err := types.ParseJID(c.jid)
+		if err != nil {
+			skipped++
+			continue
+		}
+		pnJID := resolveToPN(client, lidJID)
+		if pnJID.Server != types.DefaultUserServer {
+			skipped++
+			continue
+		}
+		pnStr := pnJID.String()
+		if _, err := tx.Exec(
+			"INSERT INTO chats (jid, name, last_message_time) VALUES (?, ?, ?) "+
+				"ON CONFLICT(jid) DO UPDATE SET "+
+				"  name = COALESCE(NULLIF(chats.name, ''), excluded.name), "+
+				"  last_message_time = MAX(chats.last_message_time, excluded.last_message_time)",
+			pnStr, c.name, c.lastMessageTime,
+		); err != nil {
+			skipped++
+			continue
+		}
+		if _, err := tx.Exec("UPDATE OR IGNORE messages SET chat_jid = ? WHERE chat_jid = ?", pnStr, c.jid); err != nil {
+			skipped++
+			continue
+		}
+		if _, err := tx.Exec("DELETE FROM messages WHERE chat_jid = ?", c.jid); err != nil {
+			skipped++
+			continue
+		}
+		if _, err := tx.Exec("DELETE FROM chats WHERE jid = ?", c.jid); err != nil {
+			skipped++
+			continue
+		}
+		merged++
+		logger.Infof("LID migration: merged %s -> %s", c.jid, pnStr)
+	}
+	if err := tx.Commit(); err != nil {
+		tx.Rollback()
+		logger.Warnf("LID migration: commit failed: %v", err)
+		return
+	}
+	logger.Infof("LID migration: %d merged, %d skipped (no mapping yet)", merged, skipped)
+}
+
 // Handle regular incoming messages with media support
 func handleMessage(client *whatsmeow.Client, messageStore *MessageStore, msg *events.Message, logger waLog.Logger) {
-	// Save message to database
-	chatJID := msg.Info.Chat.String()
-	sender := msg.Info.Sender.User
-	senderJID := msg.Info.Sender.String()
+	// Normalize LID -> PN so the same contact doesn't split across two chat_jid values.
+	chatJID := resolveToPN(client, msg.Info.Chat).String()
+	sender := resolveToPN(client, msg.Info.Sender).User
+	senderJID := resolveToPN(client, msg.Info.Sender).String()
 
 	// Enrich senders table with identity data from this event.
 	var fullName, firstName, businessName string
@@ -1215,6 +1312,9 @@ func main() {
 
 	fmt.Println("\n✓ Connected to WhatsApp! Type 'help' for commands.")
 
+	// Merge any chats stored under LID JIDs into their PN equivalents.
+	migrateLIDChats(client, messageStore, logger)
+
 	// Start REST API server (port configurable via WHATSAPP_BRIDGE_PORT env var)
 	bridgePort := 8080
 	if portStr := os.Getenv("WHATSAPP_BRIDGE_PORT"); portStr != "" {
@@ -1347,6 +1447,10 @@ func handleHistorySync(client *whatsmeow.Client, messageStore *MessageStore, his
 			continue
 		}
 
+		// Normalize LID -> PN at write time
+		jid = resolveToPN(client, jid)
+		chatJID = jid.String()
+
 		// Get appropriate chat name by passing the history sync conversation directly
 		name := GetChatName(client, messageStore, jid, chatJID, conversation, "", logger)
 
@@ -1410,7 +1514,11 @@ func handleHistorySync(client *whatsmeow.Client, messageStore *MessageStore, his
 						isFromMe = *msg.Message.Key.FromMe
 					}
 					if !isFromMe && msg.Message.Key.Participant != nil && *msg.Message.Key.Participant != "" {
-						sender = *msg.Message.Key.Participant
+						if pjid, perr := types.ParseJID(*msg.Message.Key.Participant); perr == nil {
+							sender = resolveToPN(client, pjid).User
+						} else {
+							sender = *msg.Message.Key.Participant
+						}
 					} else if isFromMe {
 						sender = client.Store.ID.User
 					} else {
