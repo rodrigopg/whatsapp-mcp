@@ -28,6 +28,8 @@ import (
 
 	"go.mau.fi/whatsmeow"
 	waProto "go.mau.fi/whatsmeow/binary/proto"
+	"go.mau.fi/whatsmeow/proto/waCompanionReg"
+	"go.mau.fi/whatsmeow/store"
 	"go.mau.fi/whatsmeow/store/sqlstore"
 	"go.mau.fi/whatsmeow/types"
 	"go.mau.fi/whatsmeow/types/events"
@@ -283,7 +285,15 @@ func extractTextContent(msg *waProto.Message) string {
 		return extendedText.GetText()
 	}
 
-	// For now, we're ignoring non-text messages
+	// Media messages can carry a text caption that should be searchable
+	if img := msg.GetImageMessage(); img != nil {
+		return img.GetCaption()
+	} else if video := msg.GetVideoMessage(); video != nil {
+		return video.GetCaption()
+	} else if doc := msg.GetDocumentMessage(); doc != nil {
+		return doc.GetCaption()
+	}
+
 	return ""
 }
 
@@ -1277,6 +1287,15 @@ func main() {
 		}
 	}
 
+	// Request a full history sync on pairing (only fires on a fresh QR scan).
+	// WhatsApp delivers up to this window as events.HistorySync after login.
+	store.DeviceProps.RequireFullSync = proto.Bool(true)
+	store.DeviceProps.HistorySyncConfig = &waCompanionReg.DeviceProps_HistorySyncConfig{
+		FullSyncDaysLimit:   proto.Uint32(365),
+		FullSyncSizeMbLimit: proto.Uint32(10240),
+		StorageQuotaMb:      proto.Uint32(10240),
+	}
+
 	// Create client instance
 	client := whatsmeow.NewClient(deviceStore, logger)
 	if client == nil {
@@ -1555,15 +1574,8 @@ func handleHistorySync(client *whatsmeow.Client, messageStore *MessageStore, his
 					continue
 				}
 
-				// Extract text content
-				var content string
-				if msg.Message.Message != nil {
-					if conv := msg.Message.Message.GetConversation(); conv != "" {
-						content = conv
-					} else if ext := msg.Message.Message.GetExtendedTextMessage(); ext != nil {
-						content = ext.GetText()
-					}
-				}
+				// Extract text content (includes media captions)
+				content := extractTextContent(msg.Message.Message)
 
 				// Extract media info
 				var mediaType, filename, url string
