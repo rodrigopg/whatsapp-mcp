@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"math"
 	"math/rand"
+	"mime"
 	"net/http"
 	"os"
 	"os/exec"
@@ -98,6 +99,25 @@ func NewMessageStore() (*MessageStore, error) {
 // Close the database connection
 func (store *MessageStore) Close() error {
 	return store.db.Close()
+}
+
+// TouchChatLastMessageTime updates only last_message_time on an existing chat row.
+func (store *MessageStore) TouchChatLastMessageTime(jid string, lastMessageTime time.Time) error {
+	_, err := store.db.Exec(
+		"UPDATE chats SET last_message_time = ? WHERE jid = ?",
+		lastMessageTime, jid,
+	)
+	return err
+}
+
+// EnsureChat creates a chat row if none exists, leaving any existing row untouched.
+// Required before StoreMessage in the outbound path to satisfy the FOREIGN KEY constraint.
+func (store *MessageStore) EnsureChat(jid string, lastMessageTime time.Time) error {
+	_, err := store.db.Exec(
+		"INSERT OR IGNORE INTO chats (jid, name, last_message_time) VALUES (?, '', ?)",
+		jid, lastMessageTime,
+	)
+	return err
 }
 
 // Store a chat in the database
@@ -205,7 +225,7 @@ type SendMessageRequest struct {
 }
 
 // Function to send a WhatsApp message
-func sendWhatsAppMessage(client *whatsmeow.Client, recipient string, message string, mediaPath string) (bool, string) {
+func sendWhatsAppMessage(client *whatsmeow.Client, messageStore *MessageStore, recipient string, message string, mediaPath string) (bool, string) {
 	if !client.IsConnected() {
 		return false, "Not connected to WhatsApp"
 	}
@@ -278,10 +298,14 @@ func sendWhatsAppMessage(client *whatsmeow.Client, recipient string, message str
 			mediaType = whatsmeow.MediaVideo
 			mimeType = "video/quicktime"
 
-		// Document types (for any other file type)
+		// Document types — use stdlib mime detection, fallback to octet-stream.
 		default:
 			mediaType = whatsmeow.MediaDocument
-			mimeType = "application/octet-stream"
+			if detected := mime.TypeByExtension("." + fileExt); detected != "" {
+				mimeType = detected
+			} else {
+				mimeType = "application/octet-stream"
+			}
 		}
 
 		// Upload media to WhatsApp servers
@@ -347,8 +371,10 @@ func sendWhatsAppMessage(client *whatsmeow.Client, recipient string, message str
 				FileLength:    &resp.FileLength,
 			}
 		case whatsmeow.MediaDocument:
+			docFilename := filepath.Base(mediaPath)
 			msg.DocumentMessage = &waProto.DocumentMessage{
-				Title:         proto.String(mediaPath[strings.LastIndex(mediaPath, "/")+1:]),
+				FileName:      proto.String(docFilename),
+				Title:         proto.String(docFilename),
 				Caption:       proto.String(message),
 				Mimetype:      proto.String(mimeType),
 				URL:           &resp.URL,
@@ -364,10 +390,28 @@ func sendWhatsAppMessage(client *whatsmeow.Client, recipient string, message str
 	}
 
 	// Send message
-	_, err = client.SendMessage(context.Background(), recipientJID, msg)
+	resp, err := client.SendMessage(context.Background(), recipientJID, msg)
 
 	if err != nil {
 		return false, fmt.Sprintf("Error sending message: %v", err)
+	}
+
+	// Persist text outbounds so own-sends appear in the local store.
+	// Multi-device echo via handleMessage doesn't fire on single-device accounts.
+	if messageStore != nil && mediaPath == "" && client.Store != nil && client.Store.ID != nil {
+		chatJID := recipientJID.String()
+		sender := client.Store.ID.User
+		if ensureErr := messageStore.EnsureChat(chatJID, resp.Timestamp); ensureErr != nil {
+			fmt.Printf("Failed to ensure chat row: %v\n", ensureErr)
+		}
+		if storeErr := messageStore.StoreMessage(
+			resp.ID, chatJID, sender, message, resp.Timestamp, true,
+			"", "", "", nil, nil, nil, 0,
+		); storeErr != nil {
+			fmt.Printf("Failed to persist outbound: %v\n", storeErr)
+		} else {
+			_ = messageStore.TouchChatLastMessageTime(chatJID, resp.Timestamp)
+		}
 	}
 
 	return true, fmt.Sprintf("Message sent to %s", recipient)
@@ -708,7 +752,7 @@ func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, port 
 		fmt.Println("Received request to send message", req.Message, req.MediaPath)
 
 		// Send the message
-		success, message := sendWhatsAppMessage(client, req.Recipient, req.Message, req.MediaPath)
+		success, message := sendWhatsAppMessage(client, messageStore, req.Recipient, req.Message, req.MediaPath)
 		fmt.Println("Message sent", success, message)
 		// Set response headers
 		w.Header().Set("Content-Type", "application/json")
@@ -776,8 +820,13 @@ func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, port 
 		})
 	})
 
-	// Start the server
-	serverAddr := fmt.Sprintf(":%d", port)
+	// Bind to loopback only — no auth on REST API, anyone on LAN could send messages.
+	// Set BIND_ADDR=0.0.0.0 to opt into LAN exposure.
+	bindAddr := os.Getenv("BIND_ADDR")
+	if bindAddr == "" {
+		bindAddr = "127.0.0.1"
+	}
+	serverAddr := fmt.Sprintf("%s:%d", bindAddr, port)
 	fmt.Printf("Starting REST API server on %s...\n", serverAddr)
 
 	// Run server in a goroutine so it doesn't block
