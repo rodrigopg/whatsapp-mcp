@@ -26,8 +26,13 @@ import subprocess
 import sys
 import tempfile
 import time
+from datetime import datetime, timedelta, timezone
 
 import requests
+
+# WhatsApp purges undelivered media from its CDN after roughly 2-3 weeks. Past
+# this age a download failure is permanent; before it, treat failures as transient.
+CDN_EXPIRY = timedelta(days=21)
 
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'whatsapp-bridge', 'store', 'messages.db')
 API_BASE = os.environ.get("WHATSAPP_API_BASE_URL", "http://localhost:8080/api")
@@ -50,8 +55,21 @@ def log(msg):
     print(f"[{time.strftime('%H:%M:%S')}] {msg}", flush=True)
 
 
+def _is_expired(ts):
+    """True if the message timestamp is older than the CDN retention window."""
+    if not ts:
+        return True  # unknown age — assume old, don't retry forever
+    try:
+        dt = datetime.fromisoformat(str(ts))
+    except ValueError:
+        return True
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return datetime.now(timezone.utc) - dt > CDN_EXPIRY
+
+
 def pending_audios(conn, limit=None):
-    sql = ("SELECT id, chat_jid, hex(file_sha256) FROM messages "
+    sql = ("SELECT id, chat_jid, hex(file_sha256), timestamp FROM messages "
            "WHERE media_type='audio' AND (content IS NULL OR content='') "
            "ORDER BY timestamp DESC")
     if limit:
@@ -131,7 +149,7 @@ def main():
     log(f"Pending audios: {total}")
     done = empty = unavailable = mismatch = failed = 0
 
-    for i, (msg_id, chat_jid, exp_sha) in enumerate(rows, 1):
+    for i, (msg_id, chat_jid, exp_sha, ts) in enumerate(rows, 1):
         prefix = f"[{i}/{total}] {msg_id[:12]}"
         try:
             # Bust any stale cached file (filename collisions) before downloading.
@@ -146,9 +164,17 @@ def main():
 
             path = download(msg_id, chat_jid)
             if not path or not os.path.isfile(path):
-                write_content(msg_id, chat_jid, SENTINEL_UNAVAILABLE)
-                unavailable += 1
-                log(f"{prefix} unavailable (download failed / 403)")
+                # Only mark permanently unavailable once the CDN window has
+                # certainly passed. A recent audio that fails is likely a
+                # transient blip — leave content='' so the next sweep retries
+                # instead of silently losing a live message.
+                if _is_expired(ts):
+                    write_content(msg_id, chat_jid, SENTINEL_UNAVAILABLE)
+                    unavailable += 1
+                    log(f"{prefix} unavailable (expired CDN, download failed)")
+                else:
+                    failed += 1
+                    log(f"{prefix} download failed but recent — will retry next sweep")
                 continue
 
             actual = sha256_file(path)

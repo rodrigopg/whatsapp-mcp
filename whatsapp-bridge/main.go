@@ -15,6 +15,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -1387,6 +1388,7 @@ func main() {
 		case *events.Connected:
 			logger.Infof("Connected to WhatsApp")
 			go SyncAllContacts(client, messageStore, logger)
+			sweepOnce.Do(func() { startTranscriptionSweep(5 * time.Minute) })
 
 		case *events.LoggedOut:
 			logger.Warnf("Device logged out, please scan QR code to log in again")
@@ -1762,6 +1764,62 @@ func requestHistorySync(client *whatsmeow.Client) {
 	} else {
 		fmt.Println("History sync requested. Waiting for server response...")
 	}
+}
+
+// sweepOnce guards against launching the transcription ticker more than once,
+// since events.Connected fires on every reconnect.
+var sweepOnce sync.Once
+
+// startTranscriptionSweep periodically shells out to the Python transcriber to
+// turn newly-arrived audio messages into searchable text. Whisper runs in a
+// separate process so it never blocks the bridge's message handling. A lockfile
+// prevents overlapping runs if a sweep outlasts the interval (e.g. a backlog
+// after downtime).
+func startTranscriptionSweep(interval time.Duration) {
+	pyDir, err := filepath.Abs("../whatsapp-mcp-server")
+	if err != nil {
+		fmt.Printf("transcription sweep disabled: %v\n", err)
+		return
+	}
+	python := filepath.Join(pyDir, ".venv", "bin", "python3")
+	script := filepath.Join(pyDir, "transcribe.py")
+	lockPath := filepath.Join(os.TempDir(), "wa_transcribe.lock")
+
+	if _, err := os.Stat(python); err != nil {
+		fmt.Printf("transcription sweep disabled: python not found at %s\n", python)
+		return
+	}
+	if _, err := os.Stat(script); err != nil {
+		fmt.Printf("transcription sweep disabled: script not found at %s\n", script)
+		return
+	}
+
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for range ticker.C {
+			// Skip if a previous sweep is still running.
+			if data, err := os.ReadFile(lockPath); err == nil {
+				if pid, perr := strconv.Atoi(strings.TrimSpace(string(data))); perr == nil {
+					if proc, ferr := os.FindProcess(pid); ferr == nil && proc.Signal(syscall.Signal(0)) == nil {
+						continue // prior sweep alive
+					}
+				}
+			}
+			cmd := exec.Command(python, script)
+			cmd.Dir = pyDir
+			if err := cmd.Start(); err != nil {
+				fmt.Printf("transcription sweep: failed to start: %v\n", err)
+				continue
+			}
+			_ = os.WriteFile(lockPath, []byte(fmt.Sprintf("%d", cmd.Process.Pid)), 0644)
+			go func(c *exec.Cmd) {
+				_ = c.Wait()
+				_ = os.Remove(lockPath)
+			}(cmd)
+		}
+	}()
+	fmt.Printf("Transcription sweep started (every %s)\n", interval)
 }
 
 // mediaRetryCache holds the info needed to decrypt + download a media retry
