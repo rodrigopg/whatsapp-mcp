@@ -70,6 +70,16 @@ Voice messages are stored with empty searchable text by default. Enable transcri
 
 Optional: `TRANSCRIPTION_PROMPT` biases both engines toward correct punctuation and domain terms.
 
+**Where these vars must live** depends on how the bridge starts — the 5-minute sweep inherits the bridge process's environment, *not* your interactive shell's:
+- **`go run main.go` / running `./whatsapp-bridge` by hand** — `export` them in the same shell first, or prefix the command.
+- **`start-bridge.sh` (from `install.sh`) or macOS launchd auto-start** — `export` in your shell will **not** reach launchd. Instead create `~/.whatsapp-mcp/transcription.env` with the vars (one `export VAR=value` per line); `start-bridge.sh` sources it, so both the manual launcher and launchd pick them up.
+
+Once an engine is configured: new voice messages become searchable within ~5 minutes, and **`list_messages` matches their transcribed text** like any other message.
+
+The backfill/recovery scripts are separate processes that read the engine vars from *their own* shell — so `source ~/.whatsapp-mcp/transcription.env` (or re-`export` the vars) in the shell you run them from; the `transcription.env` you set up for the bridge does not reach them automatically. Then, from `whatsapp-mcp-server/`:
+- **`python3 transcribe.py`** — backfill existing audios that are still downloadable.
+- **`python3 recover_audios.py`** — for audios that expired from WhatsApp's CDN (shown as `[áudio indisponível…]`); requires your **phone online**. This one scrapes the bridge's log to confirm each re-upload, so the bridge must be logging to a *file* and `WHATSAPP_BRIDGE_LOG` must point at it (a foreground `go run main.go` logs to the terminal, not a file). With the `install.sh` launchd setup the log is at `~/.whatsapp-mcp/bridge.log`, so run `WHATSAPP_BRIDGE_LOG=~/.whatsapp-mcp/bridge.log python3 recover_audios.py`.
+
 ### Configuration
 - `WHATSAPP_BRIDGE_PORT` env var — change the REST API port (default `8080`)
 - `WHATSAPP_API_BASE_URL` env var — point the Python MCP server at a non-default bridge URL
@@ -87,7 +97,7 @@ curl -fsSL https://raw.githubusercontent.com/rodrigopg/whatsapp-mcp/main/install
 ```
 
 The script:
-- checks Go 1.21+, Python 3.9+, uv (installs uv if missing)
+- checks Go 1.25+, Python 3.9+, uv (installs uv if missing)
 - clones the repo to `~/.whatsapp-mcp`
 - compiles the Go bridge
 - writes `claude_desktop_config.json` / `~/.cursor/mcp.json` automatically
@@ -102,11 +112,11 @@ After install, run `~/.whatsapp-mcp/start-bridge.sh`, open **http://localhost:80
 
 #### Prerequisites
 
-- Go 1.21+
+- Go 1.25+
 - Python 3.9+
 - Claude Desktop (or Cursor)
 - UV: `curl -LsSf https://astral.sh/uv/install.sh | sh`
-- FFmpeg *(optional)* — auto-converts audio to Opus for voice messages
+- FFmpeg — *optional* for sending/converting audio; *required* only if you enable **local** audio transcription (the `local` engine shells out to `ffmpeg`). Not needed for the API engine or core MCP use.
 
 #### Steps
 
@@ -205,7 +215,7 @@ Go WhatsApp Bridge (whatsapp-bridge/)
 - **QR code not displaying**: terminal QR not working? Check `/tmp/whatsapp-qr.png` (macOS opens it automatically).
 - **Contacts showing as numbers**: the bridge syncs names on connect. Give it a few seconds after the "Connected" message.
 - **LID contacts not found**: happens when WhatsApp hasn't yet synced the LID→PN mapping locally. Reconnect to trigger a fresh sync.
-- **Out of sync**: delete `whatsapp-bridge/store/messages.db` and `whatsapp-bridge/store/whatsapp.db`, restart to re-authenticate.
+- **Out of sync / re-pairing**: deleting `whatsapp-bridge/store/whatsapp.db` (or re-scanning the QR for any reason) forces WhatsApp to re-deliver up to a year of history. **This destroys your audio transcriptions** — the re-sync re-inserts every audio row with empty `content`, overwriting transcribed text (the writes use `INSERT OR REPLACE`). Before re-pairing, **back up `whatsapp-bridge/store/messages.db`**. Deleting only `messages.db` does *not* protect transcriptions either: the next sync still arrives empty. After re-pairing you must re-run `transcribe.py` / `recover_audios.py` to rebuild them.
 - **Device limit**: WhatsApp limits linked devices. Remove one via Settings → Linked Devices on your phone.
 
 ---

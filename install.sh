@@ -47,8 +47,8 @@ need go    "Install from https://go.dev/dl/"
 GO_VERSION=$(go version | awk '{print $3}' | sed 's/go//')
 GO_MAJOR=$(echo "$GO_VERSION" | cut -d. -f1)
 GO_MINOR=$(echo "$GO_VERSION" | cut -d. -f2)
-if [[ "$GO_MAJOR" -lt 1 || ("$GO_MAJOR" -eq 1 && "$GO_MINOR" -lt 21) ]]; then
-  die "Go 1.21+ required (found $GO_VERSION). Update from https://go.dev/dl/"
+if [[ "$GO_MAJOR" -lt 1 || ("$GO_MAJOR" -eq 1 && "$GO_MINOR" -lt 25) ]]; then
+  die "Go 1.25+ required (found $GO_VERSION). Update from https://go.dev/dl/"
 fi
 success "Go $GO_VERSION"
 
@@ -165,6 +165,11 @@ LAUNCH_SCRIPT="$INSTALL_DIR/start-bridge.sh"
 cat > "$LAUNCH_SCRIPT" <<LAUNCH
 #!/usr/bin/env bash
 cd "$INSTALL_DIR/whatsapp-bridge"
+# Transcription is opt-in. To enable it, create transcription.env next to this
+# script with your engine vars (TRANSCRIPTION_ENGINE, WHISPER_CLI/WHISPER_MODEL
+# or TRANSCRIPTION_API_KEY). Sourcing it here means both this launcher AND the
+# launchd auto-start inherit them — launchd does NOT see your shell's exports.
+[ -f "$INSTALL_DIR/transcription.env" ] && . "$INSTALL_DIR/transcription.env"
 WHATSAPP_BRIDGE_PORT=$BRIDGE_PORT exec ./whatsapp-bridge
 LAUNCH
 chmod +x "$LAUNCH_SCRIPT"
