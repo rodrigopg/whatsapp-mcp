@@ -37,14 +37,54 @@ CDN_EXPIRY = timedelta(days=21)
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'whatsapp-bridge', 'store', 'messages.db')
 API_BASE = os.environ.get("WHATSAPP_API_BASE_URL", "http://localhost:8080/api")
 
-WHISPER_CLI = "/Users/rodrigo/git/whisper.cpp/build/bin/whisper-cli"
+# --- Transcription engine configuration (all via env so the repo is portable) ---
+#
+# Engine selection: TRANSCRIPTION_ENGINE = "local" (whisper.cpp) | "api" (OpenAI/Groq).
+# Defaults reproduce the original author's local setup exactly, so an existing
+# install keeps working with no env changes. A fresh clone with neither engine
+# configured does nothing (see engine_ready / main) rather than marking audios.
+TRANSCRIPTION_ENGINE = os.environ.get("TRANSCRIPTION_ENGINE", "local").lower()
+
+# Local backend (whisper.cpp)
+WHISPER_CLI = os.environ.get("WHISPER_CLI", "/Users/rodrigo/git/whisper.cpp/build/bin/whisper-cli")
 WHISPER_MODEL = os.environ.get("WHISPER_MODEL", "/Users/rodrigo/PyCharmMiscProject/models/ggml-medium.bin")
-WHISPER_PROMPT = (
+DECODING_OPTS = ["--temperature", "0", "--no-fallback", "--max-context", "0", "--split-on-word"]
+
+# API backend (OpenAI Whisper, or any OpenAI-compatible endpoint such as Groq).
+# Set TRANSCRIPTION_API_KEY to enable. Override base/model for Groq:
+#   TRANSCRIPTION_ENGINE=api TRANSCRIPTION_API_KEY=gsk_...
+#   TRANSCRIPTION_API_BASE=https://api.groq.com/openai/v1 TRANSCRIPTION_API_MODEL=whisper-large-v3
+TRANSCRIPTION_API_KEY = os.environ.get("TRANSCRIPTION_API_KEY", "")
+TRANSCRIPTION_API_BASE = os.environ.get("TRANSCRIPTION_API_BASE", "https://api.openai.com/v1")
+TRANSCRIPTION_API_MODEL = os.environ.get("TRANSCRIPTION_API_MODEL", "whisper-1")
+API_MAX_BYTES = 25 * 1024 * 1024  # OpenAI endpoint hard limit
+
+# Shared prompt — biases both engines toward correct PT-BR punctuation + TOTVS terms.
+WHISPER_PROMPT = os.environ.get(
+    "TRANSCRIPTION_PROMPT",
     "A seguir, a transcrição de um áudio. A transcrição deve ser precisa, com "
     "pontuação e capitalização corretas. Nomes próprios como PROTHEUS, PIMS, "
-    "ADVPL, TOTVS devem ser mantidos em maiúsculas."
+    "ADVPL, TOTVS devem ser mantidos em maiúsculas.",
 )
-DECODING_OPTS = ["--temperature", "0", "--no-fallback", "--max-context", "0", "--split-on-word"]
+
+
+def engine_ready():
+    """Return (ok, reason). False means the engine isn't configured — callers
+    must do NOTHING (leave content='') rather than mark audios, so enabling
+    transcription later still picks them up."""
+    if TRANSCRIPTION_ENGINE == "local":
+        if not os.path.exists(WHISPER_CLI):
+            return False, f"local engine: whisper-cli not found at {WHISPER_CLI}"
+        if not os.path.exists(WHISPER_MODEL):
+            return False, f"local engine: model not found at {WHISPER_MODEL}"
+        if not shutil.which("ffmpeg"):
+            return False, "local engine: ffmpeg not found"
+        return True, "local"
+    if TRANSCRIPTION_ENGINE == "api":
+        if not TRANSCRIPTION_API_KEY:
+            return False, "api engine: TRANSCRIPTION_API_KEY not set"
+        return True, "api"
+    return False, f"unknown TRANSCRIPTION_ENGINE={TRANSCRIPTION_ENGINE!r} (use 'local' or 'api')"
 
 # Sentinels mark "done, but no searchable text" so they are never retried.
 SENTINEL_EMPTY = "[áudio sem transcrição]"
@@ -96,6 +136,14 @@ def sha256_file(path):
 
 
 def transcribe(ogg_path, message_id):
+    """Transcribe one audio file to text. Dispatches to the configured engine.
+    Public signature is stable — recover_audios.py imports and calls this."""
+    if TRANSCRIPTION_ENGINE == "api":
+        return _transcribe_api(ogg_path)
+    return _transcribe_local(ogg_path, message_id)
+
+
+def _transcribe_local(ogg_path, message_id):
     """ffmpeg -> wav -> whisper-cli -> text. Unique temp names per message."""
     tmpdir = tempfile.mkdtemp(prefix=f"wa_tx_{message_id}_")
     wav = os.path.join(tmpdir, "audio.wav")
@@ -117,6 +165,24 @@ def transcribe(ogg_path, message_id):
         shutil.rmtree(tmpdir, ignore_errors=True)
 
 
+def _transcribe_api(ogg_path):
+    """OpenAI-compatible STT (/audio/transcriptions). Serves OpenAI or Groq via env."""
+    size = os.path.getsize(ogg_path)
+    if size > API_MAX_BYTES:
+        # Don't silently drop — voice notes are tiny, so this is rare; surface it.
+        raise RuntimeError(f"audio {size} bytes exceeds API limit {API_MAX_BYTES}")
+    with open(ogg_path, "rb") as f:
+        r = requests.post(
+            f"{TRANSCRIPTION_API_BASE}/audio/transcriptions",
+            headers={"Authorization": f"Bearer {TRANSCRIPTION_API_KEY}"},
+            files={"file": (os.path.basename(ogg_path), f, "audio/ogg")},
+            data={"model": TRANSCRIPTION_API_MODEL, "language": "pt", "prompt": WHISPER_PROMPT},
+            timeout=120,
+        )
+    r.raise_for_status()
+    return (r.json().get("text") or "").strip()
+
+
 def write_content(message_id, chat_jid, content):
     """Short-lived write so we never hold the DB during transcription."""
     conn = sqlite3.connect(DB_PATH, timeout=10)
@@ -134,12 +200,15 @@ def main():
     ap.add_argument("--limit", type=int, default=None)
     args = ap.parse_args()
 
-    if not os.path.exists(WHISPER_CLI):
-        sys.exit(f"whisper-cli not found at {WHISPER_CLI}")
-    if not os.path.exists(WHISPER_MODEL):
-        sys.exit(f"model not found at {WHISPER_MODEL}")
-    if not shutil.which("ffmpeg"):
-        sys.exit("ffmpeg not found")
+    # If no engine is configured, do nothing and touch zero rows. "Not
+    # configured" is not "failed" — marking audios here would permanently skip
+    # them once the user later enables transcription. Exit 0 so the bridge
+    # sweep treats it as a clean no-op.
+    ok, reason = engine_ready()
+    if not ok:
+        log(f"Transcription not active ({reason}); leaving audios untouched.")
+        return
+    log(f"Engine: {reason}")
 
     conn = sqlite3.connect(DB_PATH, timeout=10)
     rows = pending_audios(conn, args.limit)

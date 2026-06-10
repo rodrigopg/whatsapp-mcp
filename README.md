@@ -47,10 +47,34 @@ WhatsApp has been migrating contacts from phone-based JIDs (`+55...@s.whatsapp.n
 - **`create_group`** — create a new WhatsApp group with a name and participants; optionally create as a community parent or sub-group
 - **`leave_group`** — leave a group by JID
 
+### Audio transcription (opt-in)
+Voice messages are stored with empty searchable text by default. Enable transcription to turn them into searchable `content`, written back into the messages DB so the normal (accent-insensitive) search finds them. A 5-minute sweep in the bridge transcribes new audios automatically; `transcribe.py` backfills existing ones, and `recover_audios.py` recovers media that expired from WhatsApp's CDN (via media retry — needs your phone online).
+
+**Transcription is off until you configure an engine.** With nothing set, the sweep is a clean no-op — it never marks audios, so enabling later still picks them all up. Pick one engine:
+
+- **Local (whisper.cpp)** — private, no per-call cost, needs a compiled [whisper.cpp](https://github.com/ggml-org/whisper.cpp) build + a model + `ffmpeg`:
+  ```sh
+  export TRANSCRIPTION_ENGINE=local
+  export WHISPER_CLI=/path/to/whisper.cpp/build/bin/whisper-cli
+  export WHISPER_MODEL=/path/to/models/ggml-medium.bin
+  ```
+- **API (OpenAI Whisper, or any OpenAI-compatible endpoint like Groq)** — zero local setup, audio leaves your machine:
+  ```sh
+  export TRANSCRIPTION_ENGINE=api
+  export TRANSCRIPTION_API_KEY=sk-...           # OpenAI
+  # Groq instead:
+  #   TRANSCRIPTION_API_KEY=gsk_...
+  #   TRANSCRIPTION_API_BASE=https://api.groq.com/openai/v1
+  #   TRANSCRIPTION_API_MODEL=whisper-large-v3
+  ```
+
+Optional: `TRANSCRIPTION_PROMPT` biases both engines toward correct punctuation and domain terms.
+
 ### Configuration
 - `WHATSAPP_BRIDGE_PORT` env var — change the REST API port (default `8080`)
 - `WHATSAPP_API_BASE_URL` env var — point the Python MCP server at a non-default bridge URL
 - `BIND_ADDR` env var — change the bind address of the REST API
+- Transcription env vars — see [Audio transcription](#audio-transcription-opt-in) above
 
 ---
 
