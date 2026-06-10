@@ -23,14 +23,19 @@ import time
 import requests
 
 from transcribe import (DB_PATH, API_BASE, transcribe, write_content,
-                        SENTINEL_EMPTY)
+                        engine_ready, SENTINEL_EMPTY)
 
-BRIDGE_LOG = "/tmp/wa-bridge.log"
+BRIDGE_LOG = os.environ.get("WHATSAPP_BRIDGE_LOG", "/tmp/wa-bridge.log")
 SENTINEL_NOT_ON_PHONE = "[áudio indisponível: não está mais no telefone]"
 
-RE_SUCCESS = re.compile(r"MEDIA RETRY (\w+): recovered \d+ bytes")
-RE_NOT_AVAIL = re.compile(r"MEDIA RETRY (\w+): result=.*not available")
-RE_DECRYPT_FAIL = re.compile(r"MEDIA RETRY (\w+): FAILED")
+# These must stay in sync with the stable log contract emitted by
+# handleMediaRetry in whatsapp-bridge/main.go. Any "MEDIA RETRY <id>:" line that
+# matches none of these goes to the `unclassified` bucket — never silently into
+# no_response, which would tell the operator to retry a permanent failure.
+RE_LINE = re.compile(r"MEDIA RETRY (\w+): (\w+)")
+RES_SUCCESS = "SUCCESS"
+RES_NOTONPHONE = "NOTONPHONE"
+RES_ERROR = "ERROR"
 
 
 def log(msg):
@@ -54,20 +59,31 @@ def request_retry(message_id, chat_jid):
 
 
 def scan_log_since(offset):
-    """Read new bridge-log bytes since offset; classify MEDIA RETRY outcomes."""
-    recovered, not_on_phone, failed = set(), set(), set()
-    with open(BRIDGE_LOG, encoding="utf-8", errors="ignore") as f:
-        f.seek(offset)
-        data = f.read()
-        new_offset = f.tell()
+    """Read new bridge-log bytes since offset; classify MEDIA RETRY outcomes.
+    Returns (recovered, not_on_phone, errored, unclassified, new_offset)."""
+    recovered, not_on_phone, errored, unclassified = set(), set(), set(), set()
+    try:
+        with open(BRIDGE_LOG, encoding="utf-8", errors="ignore") as f:
+            f.seek(offset)
+            data = f.read()
+            new_offset = f.tell()
+    except OSError as e:
+        log(f"WARN: cannot read bridge log {BRIDGE_LOG}: {e}")
+        return recovered, not_on_phone, errored, unclassified, offset
     for line in data.splitlines():
-        if m := RE_SUCCESS.search(line):
-            recovered.add(m.group(1))
-        elif m := RE_NOT_AVAIL.search(line):
-            not_on_phone.add(m.group(1))
-        elif m := RE_DECRYPT_FAIL.search(line):
-            failed.add(m.group(1))
-    return recovered, not_on_phone, failed, new_offset
+        m = RE_LINE.search(line)
+        if not m:
+            continue
+        msg_id, result = m.group(1), m.group(2)
+        if result == RES_SUCCESS:
+            recovered.add(msg_id)
+        elif result == RES_NOTONPHONE:
+            not_on_phone.add(msg_id)
+        elif result == RES_ERROR:
+            errored.add(msg_id)
+        else:
+            unclassified.add(msg_id)
+    return recovered, not_on_phone, errored, unclassified, new_offset
 
 
 def recovered_file(chat_jid, msg_id):
@@ -83,22 +99,40 @@ def main():
     ap.add_argument("--quiet", type=int, default=12, help="seconds of log silence = batch done")
     args = ap.parse_args()
 
+    # Recovery transcribes the recovered files, so the engine must be usable.
+    ok, reason = engine_ready()
+    if not ok:
+        log(f"Transcription engine not ready ({reason}); aborting recovery so "
+            f"recovered audios aren't left untranscribed.")
+        return
+    # The whole flow is driven by scraping the bridge log; if it isn't there,
+    # every outcome would be misclassified as no-response. Fail loudly instead.
+    if not os.path.exists(BRIDGE_LOG):
+        log(f"Bridge log not found at {BRIDGE_LOG}. Set WHATSAPP_BRIDGE_LOG or "
+            f"start the bridge with stdout redirected there. Aborting.")
+        return
+
     conn = sqlite3.connect(DB_PATH, timeout=10)
     rows = unavailable_audios(conn, args.limit)
     conn.close()
     total = len(rows)
     log(f"Unavailable audios to attempt: {total}")
 
-    log_offset = os.path.getsize(BRIDGE_LOG) if os.path.exists(BRIDGE_LOG) else 0
-    recovered_ids, not_on_phone_ids, failed_ids = set(), set(), set()
+    log_offset = os.path.getsize(BRIDGE_LOG)
+    recovered_ids, not_on_phone_ids, errored_ids, unclassified_ids = set(), set(), set(), set()
+    request_failed_ids = set()
     id_to_chat = {r[0]: r[1] for r in rows}
 
     for start in range(0, total, args.batch):
         batch = rows[start:start + args.batch]
         log(f"--- batch {start//args.batch + 1}: requesting {len(batch)} retries ---")
         for msg_id, chat_jid in batch:
-            if not request_retry(msg_id, chat_jid):
-                failed_ids.add(msg_id)
+            try:
+                if not request_retry(msg_id, chat_jid):
+                    request_failed_ids.add(msg_id)
+            except requests.RequestException as e:
+                request_failed_ids.add(msg_id)
+                log(f"  retry request failed for {msg_id[:12]}: {e}")
             time.sleep(0.4)  # gentle pacing between receipts
 
         # Wait for the phone's async responses: stop when the log goes quiet.
@@ -106,41 +140,54 @@ def main():
         last_size = os.path.getsize(BRIDGE_LOG)
         while time.time() - last_change < args.quiet:
             time.sleep(2)
-            size = os.path.getsize(BRIDGE_LOG)
+            try:
+                size = os.path.getsize(BRIDGE_LOG)
+                with open(BRIDGE_LOG, encoding="utf-8", errors="ignore") as f:
+                    f.seek(max(0, size - 4000))
+                    tail = f.read()
+            except OSError as e:
+                log(f"  WARN: bridge log read failed ({e}); ending wait")
+                break
             if size != last_size:
                 last_size = size
                 last_change = time.time()
-            # backoff guard
-            with open(BRIDGE_LOG, encoding="utf-8", errors="ignore") as f:
-                f.seek(max(0, size - 4000))
-                tail = f.read()
             if "stream end" in tail or "replaced" in tail.lower():
-                log("WARN: stream/replaced in log — backing off 30s")
+                log("  WARN: stream/replaced in log — backing off 30s")
                 time.sleep(30)
 
-        rec, nap, fail, log_offset = scan_log_since(log_offset)
+        rec, nap, err, uncl, log_offset = scan_log_since(log_offset)
         recovered_ids |= rec
         not_on_phone_ids |= nap
-        failed_ids |= fail
-        log(f"  batch result: recovered={len(rec)} not_on_phone={len(nap)} failed={len(fail)}")
+        errored_ids |= err
+        unclassified_ids |= uncl
+        log(f"  batch: recovered={len(rec)} not_on_phone={len(nap)} "
+            f"errored={len(err)} unclassified={len(uncl)}")
 
-    # Transcribe everything that recovered, straight off disk.
+    # Transcribe everything that recovered, straight off disk. Guard per item so
+    # one failure (or a stale log line whose ID isn't in this run) can't abort
+    # the loop and lose already-recovered work.
     log(f"Transcribing {len(recovered_ids)} recovered audios...")
-    transcribed = empty = missing = 0
+    transcribed = empty = missing = tx_failed = 0
     for msg_id in recovered_ids:
-        chat_jid = id_to_chat[msg_id]
-        path = recovered_file(chat_jid, msg_id)
-        if not path:
-            missing += 1
-            continue
-        text = transcribe(path, msg_id)
-        if text:
-            write_content(msg_id, chat_jid, text)
-            transcribed += 1
-            log(f"  {msg_id[:12]} ok: {text[:50]}...")
-        else:
-            write_content(msg_id, chat_jid, SENTINEL_EMPTY)
-            empty += 1
+        chat_jid = id_to_chat.get(msg_id)
+        if chat_jid is None:
+            continue  # log line from a prior run; not part of this batch
+        try:
+            path = recovered_file(chat_jid, msg_id)
+            if not path:
+                missing += 1
+                continue
+            text = transcribe(path, msg_id)
+            if text:
+                write_content(msg_id, chat_jid, text)
+                transcribed += 1
+                log(f"  {msg_id[:12]} ok: {text[:50]}...")
+            else:
+                write_content(msg_id, chat_jid, SENTINEL_EMPTY)
+                empty += 1
+        except Exception as e:
+            tx_failed += 1
+            log(f"  {msg_id[:12]} transcription error: {e}")
 
     # Mark phone-confirmed-absent distinctly so a future pass can skip them.
     conn = sqlite3.connect(DB_PATH, timeout=10)
@@ -151,15 +198,19 @@ def main():
     conn.commit()
     conn.close()
 
-    no_response = total - len(recovered_ids) - len(not_on_phone_ids) - len(failed_ids)
+    classified = (len(recovered_ids) | 0) + len(not_on_phone_ids) + len(errored_ids)
+    no_response = total - classified - len(request_failed_ids) - len(unclassified_ids)
     log("=" * 50)
     log(f"RECOVERY DONE (of {total} attempted):")
-    log(f"  recovered+transcribed = {transcribed}")
+    log(f"  recovered+transcribed  = {transcribed}")
     log(f"  recovered but empty    = {empty}")
     log(f"  recovered but file gone= {missing}")
-    log(f"  not on phone (code 2)  = {len(not_on_phone_ids)}")
-    log(f"  request failed         = {len(failed_ids)}")
-    log(f"  no response (offline/throttled, retry later) = {no_response}")
+    log(f"  transcription errored  = {tx_failed}")
+    log(f"  not on phone           = {len(not_on_phone_ids)}")
+    log(f"  bridge errored (see log)= {len(errored_ids)}")
+    log(f"  unclassified (see log) = {len(unclassified_ids)}")
+    log(f"  retry request failed   = {len(request_failed_ids)}")
+    log(f"  no response (retry later)= {max(0, no_response)}")
 
 
 if __name__ == "__main__":

@@ -887,14 +887,15 @@ func (store *MessageStore) GetMediaInfo(id, chatJID string) (string, string, str
 // the retry message ID comes from the phone's response), so they are reduced to
 // their base name and checked for separators / dot segments.
 func safeMediaPath(chatDir, messageID, filename string) (string, error) {
-	id := filepath.Base(messageID)
-	name := filepath.Base(filename)
-	for _, c := range []string{id, name} {
+	// Reject the raw components rather than silently reducing them with
+	// filepath.Base — a value containing a separator or dot segment is treated
+	// as an attack and surfaced, not sanitized away.
+	for _, c := range []string{messageID, filename} {
 		if c == "" || c == "." || c == ".." || strings.ContainsAny(c, `/\`) {
 			return "", fmt.Errorf("unsafe media path component: %q", c)
 		}
 	}
-	joined := filepath.Join(chatDir, id+"_"+name)
+	joined := filepath.Join(chatDir, messageID+"_"+filename)
 	// Defense in depth: ensure the cleaned result is still under chatDir.
 	rel, err := filepath.Rel(chatDir, joined)
 	if err != nil || strings.HasPrefix(rel, "..") {
@@ -1382,8 +1383,11 @@ func main() {
 
 		case *events.MediaRetry:
 			// Phone responded to a media retry request with a (hopefully) fresh
-			// directPath for media whose CDN reference had expired.
-			handleMediaRetry(client, messageStore, v, logger)
+			// directPath. Handle off the event loop — it does a synchronous
+			// download + disk write, and whatsmeow serializes event callbacks,
+			// so running it inline would stall all other events during a
+			// recover_audios.py flood.
+			go handleMediaRetry(client, messageStore, v, logger)
 
 		case *events.Connected:
 			logger.Infof("Connected to WhatsApp")
@@ -1798,6 +1802,10 @@ func startTranscriptionSweep(interval time.Duration) {
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
 		for range ticker.C {
+			// Drop media-retry entries the phone never answered, so unused
+			// decryption keys don't accumulate in memory across a long run.
+			mediaRetryCache.evictOlderThan(30*time.Minute, time.Now())
+
 			// Skip if a previous sweep is still running.
 			if data, err := os.ReadFile(lockPath); err == nil {
 				if pid, perr := strconv.Atoi(strings.TrimSpace(string(data))); perr == nil {
@@ -1808,6 +1816,11 @@ func startTranscriptionSweep(interval time.Duration) {
 			}
 			cmd := exec.Command(python, script)
 			cmd.Dir = pyDir
+			// Surface the transcriber's output (its DONE summary, per-audio
+			// errors, the oversized-audio RuntimeError) in the bridge log
+			// instead of discarding it to /dev/null.
+			cmd.Stdout = os.Stdout
+			cmd.Stderr = os.Stderr
 			// Point transcribe.py at THIS bridge's REST port. Without this it
 			// defaults to :8080 and every download fails when the bridge runs
 			// on a non-default port. A pre-set WHATSAPP_API_BASE_URL wins.
@@ -1823,9 +1836,18 @@ func startTranscriptionSweep(interval time.Duration) {
 				fmt.Printf("transcription sweep: failed to start: %v\n", err)
 				continue
 			}
-			_ = os.WriteFile(lockPath, []byte(fmt.Sprintf("%d", cmd.Process.Pid)), 0644)
+			// The lockfile is the only overlap guard; if we can't write it,
+			// don't leave a process running unguarded — kill it and retry next tick.
+			if err := os.WriteFile(lockPath, []byte(fmt.Sprintf("%d", cmd.Process.Pid)), 0644); err != nil {
+				fmt.Printf("transcription sweep: cannot write lockfile (%v); killing sweep to preserve overlap guard\n", err)
+				_ = cmd.Process.Kill()
+				_ = cmd.Wait()
+				continue
+			}
 			go func(c *exec.Cmd) {
-				_ = c.Wait()
+				if err := c.Wait(); err != nil {
+					fmt.Printf("transcription sweep: transcribe.py exited with error: %v\n", err)
+				}
 				_ = os.Remove(lockPath)
 			}(cmd)
 		}
@@ -1833,8 +1855,10 @@ func startTranscriptionSweep(interval time.Duration) {
 	fmt.Printf("Transcription sweep started (every %s)\n", interval)
 }
 
-// mediaRetryCache holds the info needed to decrypt + download a media retry
-// response, keyed by message ID. Populated when a retry receipt is sent.
+// mediaRetryEntry holds the info needed to decrypt + download a media retry
+// response. It is keyed by message ID inside mediaRetryCache. The four crypto
+// fields (mediaKey, fileSHA256, fileEncSHA256, fileLength) plus mediaType are
+// consumed together by DownloadMediaWithPath and must travel as a set.
 type mediaRetryEntry struct {
 	chatJID       string
 	mediaKey      []byte
@@ -1843,12 +1867,48 @@ type mediaRetryEntry struct {
 	fileLength    uint64
 	mediaType     string
 	filename      string
+	storedAt      time.Time
 }
 
-var mediaRetryCache = struct {
-	sync.Mutex
-	m map[string]mediaRetryEntry
-}{m: make(map[string]mediaRetryEntry)}
+// retryCache maps message ID -> pending retry entry. All access goes through its
+// methods so the map is never touched without the lock, and consume() evicts on
+// read so entries (which pin a decryption key in memory) don't accumulate.
+type retryCache struct {
+	mu sync.Mutex // guards m
+	m  map[string]mediaRetryEntry
+}
+
+func (c *retryCache) store(id string, e mediaRetryEntry) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.m[id] = e
+}
+
+// consume returns the entry for id and removes it, so a retry response is
+// handled at most once and the key material is freed.
+func (c *retryCache) consume(id string) (mediaRetryEntry, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	e, ok := c.m[id]
+	if ok {
+		delete(c.m, id)
+	}
+	return e, ok
+}
+
+// evictOlderThan drops entries the phone never answered, so a media-retry
+// request that gets no response doesn't leak its key material forever.
+func (c *retryCache) evictOlderThan(maxAge time.Duration, now time.Time) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for id, e := range c.m {
+		if now.Sub(e.storedAt) > maxAge {
+			delete(c.m, id)
+		}
+	}
+}
+
+var mediaRetryCache = &retryCache{m: make(map[string]mediaRetryEntry)}
 
 // requestMediaRetry asks the phone to re-upload media whose CDN reference has
 // expired (download returns 403). The phone responds with an events.MediaRetry
@@ -1885,13 +1945,11 @@ func requestMediaRetry(client *whatsmeow.Client, messageStore *MessageStore, mes
 		senderJID = types.JID{User: sender, Server: types.DefaultUserServer}
 	}
 
-	mediaRetryCache.Lock()
-	mediaRetryCache.m[messageID] = mediaRetryEntry{
+	mediaRetryCache.store(messageID, mediaRetryEntry{
 		chatJID: chatJID, mediaKey: mediaKey, fileSHA256: fileSHA256,
 		fileEncSHA256: fileEncSHA256, fileLength: fileLength,
-		mediaType: mediaType, filename: filename,
-	}
-	mediaRetryCache.Unlock()
+		mediaType: mediaType, filename: filename, storedAt: time.Now(),
+	})
 
 	info := &types.MessageInfo{
 		ID: messageID,
@@ -1908,10 +1966,16 @@ func requestMediaRetry(client *whatsmeow.Client, messageStore *MessageStore, mes
 // handleMediaRetry processes the phone's response to a media retry request: on
 // success it downloads with the fresh directPath and persists the file so the
 // normal download/transcription path can use it.
+// Stable log contract consumed by recover_audios.py. Every terminal outcome
+// emits exactly one of these tags so the recovery orchestrator can classify it
+// without guessing — keep these in sync with the regexes in recover_audios.py.
+//   MEDIA RETRY <id>: SUCCESS recovered <n> bytes -> <path>
+//   MEDIA RETRY <id>: NOTONPHONE <result>   (phone no longer has the file)
+//   MEDIA RETRY <id>: ERROR <reason>        (terminal local/decrypt failure)
 func handleMediaRetry(client *whatsmeow.Client, messageStore *MessageStore, evt *events.MediaRetry, logger waLog.Logger) {
-	mediaRetryCache.Lock()
-	entry, ok := mediaRetryCache.m[evt.MessageID]
-	mediaRetryCache.Unlock()
+	// consume() evicts the entry so a duplicate response can't re-run the
+	// download and the key material is freed on every path below.
+	entry, ok := mediaRetryCache.consume(evt.MessageID)
 	if !ok {
 		logger.Warnf("media retry response for unknown message %s", evt.MessageID)
 		return
@@ -1919,17 +1983,14 @@ func handleMediaRetry(client *whatsmeow.Client, messageStore *MessageStore, evt 
 
 	retryData, err := whatsmeow.DecryptMediaRetryNotification(evt, entry.mediaKey)
 	if err != nil {
-		fmt.Printf("MEDIA RETRY %s: FAILED to decrypt: %v\n", evt.MessageID, err)
+		fmt.Printf("MEDIA RETRY %s: ERROR decrypt failed: %v\n", evt.MessageID, err)
 		return
 	}
 	if retryData.GetResult() != waMmsRetry.MediaRetryNotification_SUCCESS {
-		fmt.Printf("MEDIA RETRY %s: result=%s (media not available on phone)\n",
-			evt.MessageID, retryData.GetResult())
+		// Phone-side result (NOT_FOUND etc.) — the file is gone from the phone.
+		fmt.Printf("MEDIA RETRY %s: NOTONPHONE %s\n", evt.MessageID, retryData.GetResult())
 		return
 	}
-
-	newPath := retryData.GetDirectPath()
-	fmt.Printf("MEDIA RETRY %s: SUCCESS, fresh directPath=%s\n", evt.MessageID, newPath)
 
 	var waMediaType whatsmeow.MediaType
 	switch entry.mediaType {
@@ -1941,31 +2002,35 @@ func handleMediaRetry(client *whatsmeow.Client, messageStore *MessageStore, evt 
 		waMediaType = whatsmeow.MediaAudio
 	case "document":
 		waMediaType = whatsmeow.MediaDocument
+	default:
+		fmt.Printf("MEDIA RETRY %s: ERROR unsupported media type %q\n", evt.MessageID, entry.mediaType)
+		return
 	}
 
+	newPath := retryData.GetDirectPath()
 	data, err := client.DownloadMediaWithPath(context.Background(), newPath,
 		entry.fileEncSHA256, entry.fileSHA256, entry.mediaKey,
 		int(entry.fileLength), waMediaType, "")
 	if err != nil {
-		fmt.Printf("MEDIA RETRY %s: download with fresh path failed: %v\n", evt.MessageID, err)
+		fmt.Printf("MEDIA RETRY %s: ERROR download with fresh path failed: %v\n", evt.MessageID, err)
 		return
 	}
 
 	chatDir := fmt.Sprintf("store/%s", strings.ReplaceAll(entry.chatJID, ":", "_"))
 	if err := os.MkdirAll(chatDir, 0755); err != nil {
-		fmt.Printf("MEDIA RETRY %s: mkdir failed: %v\n", evt.MessageID, err)
+		fmt.Printf("MEDIA RETRY %s: ERROR mkdir failed: %v\n", evt.MessageID, err)
 		return
 	}
 	localPath, err := safeMediaPath(chatDir, evt.MessageID, entry.filename)
 	if err != nil {
-		fmt.Printf("MEDIA RETRY %s: %v\n", evt.MessageID, err)
+		fmt.Printf("MEDIA RETRY %s: ERROR %v\n", evt.MessageID, err)
 		return
 	}
 	if err := os.WriteFile(localPath, data, 0644); err != nil {
-		fmt.Printf("MEDIA RETRY %s: write failed: %v\n", evt.MessageID, err)
+		fmt.Printf("MEDIA RETRY %s: ERROR write failed: %v\n", evt.MessageID, err)
 		return
 	}
-	fmt.Printf("MEDIA RETRY %s: recovered %d bytes -> %s\n", evt.MessageID, len(data), localPath)
+	fmt.Printf("MEDIA RETRY %s: SUCCESS recovered %d bytes -> %s\n", evt.MessageID, len(data), localPath)
 }
 
 // analyzeOggOpus tries to extract duration and generate a simple waveform from an Ogg Opus file

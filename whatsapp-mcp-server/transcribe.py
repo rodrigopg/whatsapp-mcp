@@ -1,11 +1,12 @@
 """Backfill audio transcriptions into messages.content.
 
-Headless transcription pipeline reusing the local whisper.cpp build. For each
-audio message with empty content, it downloads the media through the bridge,
-verifies the bytes against the stored plaintext SHA-256 (the stored filename is
-derived from sync time and collides, so the SHA is the only reliable identity
-guard), converts to 16 kHz mono WAV, runs whisper-cli, and writes the result
-back into messages.content so the normal accent-insensitive search finds it.
+Headless transcription pipeline (local whisper.cpp or an OpenAI-compatible API).
+For each audio message with empty content, it downloads the media through the
+bridge, verifies the bytes against the stored plaintext SHA-256 as an integrity
+check (files are identified on disk by their `<messageID>_` path prefix, written
+by the bridge; the SHA guards against a corrupt or mismatched download), runs
+the configured engine, and writes the result back into messages.content so the
+normal accent-insensitive search finds it.
 
 Idempotency uses three distinct content states:
   - real text         -> transcribed, done
@@ -31,7 +32,9 @@ from datetime import datetime, timedelta, timezone
 import requests
 
 # WhatsApp purges undelivered media from its CDN after roughly 2-3 weeks. Past
-# this age a download failure is permanent; before it, treat failures as transient.
+# this age a CDN download failure is permanent (the media may still be
+# recoverable from the phone via recover_audios.py); before it, treat the
+# failure as transient and let the next sweep retry.
 CDN_EXPIRY = timedelta(days=21)
 
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'whatsapp-bridge', 'store', 'messages.db')
@@ -118,13 +121,22 @@ def pending_audios(conn, limit=None):
 
 
 def download(message_id, chat_jid):
-    """Download via the bridge. Returns local path, or None on failure."""
-    r = requests.post(f"{API_BASE}/download",
-                      json={"message_id": message_id, "chat_jid": chat_jid},
-                      timeout=120)
-    if r.status_code == 200 and r.json().get("success"):
-        return r.json().get("path")
-    return None
+    """Download via the bridge. Returns (path, error). On success error is None;
+    on failure path is None and error carries the bridge's message so the caller
+    can distinguish an expired 403 from a bridge bug in the log."""
+    try:
+        r = requests.post(f"{API_BASE}/download",
+                          json={"message_id": message_id, "chat_jid": chat_jid},
+                          timeout=120)
+    except requests.RequestException as e:
+        return None, f"request error: {e}"
+    try:
+        body = r.json()
+    except ValueError:
+        return None, f"HTTP {r.status_code}: {r.text[:120]}"
+    if r.status_code == 200 and body.get("success"):
+        return body.get("path"), None
+    return None, body.get("message", f"HTTP {r.status_code}")
 
 
 def sha256_file(path):
@@ -165,6 +177,10 @@ def _transcribe_local(ogg_path, message_id):
         shutil.rmtree(tmpdir, ignore_errors=True)
 
 
+class FatalTranscriptionError(Exception):
+    """A misconfiguration (e.g. bad API key) that retrying won't fix — abort the run."""
+
+
 def _transcribe_api(ogg_path):
     """OpenAI-compatible STT (/audio/transcriptions). Serves OpenAI or Groq via env."""
     size = os.path.getsize(ogg_path)
@@ -179,6 +195,10 @@ def _transcribe_api(ogg_path):
             data={"model": TRANSCRIPTION_API_MODEL, "language": "pt", "prompt": WHISPER_PROMPT},
             timeout=120,
         )
+    # A rejected key fails every audio identically — don't loop on it forever.
+    if r.status_code in (401, 403):
+        raise FatalTranscriptionError(
+            f"transcription API rejected the key (HTTP {r.status_code}); check TRANSCRIPTION_API_KEY")
     r.raise_for_status()
     return (r.json().get("text") or "").strip()
 
@@ -221,7 +241,8 @@ def main():
     for i, (msg_id, chat_jid, exp_sha, ts) in enumerate(rows, 1):
         prefix = f"[{i}/{total}] {msg_id[:12]}"
         try:
-            # Bust any stale cached file (filename collisions) before downloading.
+            # Force a fresh download: drop this message's own cached file so the
+            # bridge re-fetches rather than serving a possibly-stale copy.
             chat_dir = os.path.join(os.path.dirname(DB_PATH), chat_jid.replace(":", "_"))
             if os.path.isdir(chat_dir):
                 for fn in os.listdir(chat_dir):
@@ -231,7 +252,7 @@ def main():
                         except OSError:
                             pass
 
-            path = download(msg_id, chat_jid)
+            path, dl_err = download(msg_id, chat_jid)
             if not path or not os.path.isfile(path):
                 # Only mark permanently unavailable once the CDN window has
                 # certainly passed. A recent audio that fails is likely a
@@ -240,10 +261,10 @@ def main():
                 if _is_expired(ts):
                     write_content(msg_id, chat_jid, SENTINEL_UNAVAILABLE)
                     unavailable += 1
-                    log(f"{prefix} unavailable (expired CDN, download failed)")
+                    log(f"{prefix} unavailable (expired CDN): {dl_err}")
                 else:
                     failed += 1
-                    log(f"{prefix} download failed but recent — will retry next sweep")
+                    log(f"{prefix} download failed but recent — will retry next sweep: {dl_err}")
                 continue
 
             actual = sha256_file(path)
@@ -262,9 +283,22 @@ def main():
                 write_content(msg_id, chat_jid, SENTINEL_EMPTY)
                 empty += 1
                 log(f"{prefix} empty audio (no speech)")
+        except FatalTranscriptionError as e:
+            # Misconfiguration — every audio would fail the same way. Stop now
+            # rather than burning the whole worklist (and API requests) on it.
+            log(f"{prefix} FATAL: {e}")
+            log("Aborting run — fix the configuration and re-run.")
+            break
+        except subprocess.CalledProcessError as e:
+            # ffmpeg / whisper-cli failed — surface stderr, not just the exit code.
+            failed += 1
+            stderr = (e.stderr or b"")
+            if isinstance(stderr, bytes):
+                stderr = stderr.decode("utf-8", "ignore")
+            log(f"{prefix} ERROR ({e.cmd[0]} exit {e.returncode}): {stderr[-300:].strip()}")
         except Exception as e:
             failed += 1
-            log(f"{prefix} ERROR: {e}")
+            log(f"{prefix} ERROR: {e!r}")
 
     log(f"DONE. transcribed={done} empty={empty} unavailable={unavailable} "
         f"sha_mismatch={mismatch} errors={failed} total={total}")
