@@ -894,3 +894,42 @@ def leave_group(jid: str) -> Tuple[bool, str]:
         return False, f"Request error: {str(e)}"
     except Exception as e:
         return False, f"Unexpected error: {str(e)}"
+
+
+def mark_chat_read(chat_jid: str, message_ids: List[str], sender_jid: str = "", timestamp: int = 0) -> Tuple[bool, str]:
+    try:
+        if not chat_jid or not chat_jid.strip():
+            return False, "chat_jid is required"
+        url = f"{WHATSAPP_API_BASE_URL}/mark_chat_read"
+        payload: Dict[str, Any] = {"chat_jid": chat_jid, "message_ids": message_ids}
+        if sender_jid:
+            payload["sender_jid"] = sender_jid
+        if timestamp:
+            payload["timestamp"] = timestamp
+        response = requests.post(url, json=payload)
+        try:
+            result = response.json()
+        except json.JSONDecodeError:
+            return False, f"Error parsing response: {response.text}"
+        return bool(result.get("success", False)), result.get("message", "Unknown response")
+    except requests.RequestException as e:
+        return False, f"Request error: {str(e)}"
+    except Exception as e:
+        return False, f"Unexpected error: {str(e)}"
+
+
+def mark_chat_unread(chat_jid: str) -> Tuple[bool, str]:
+    try:
+        if not chat_jid or not chat_jid.strip():
+            return False, "chat_jid is required"
+        url = f"{WHATSAPP_API_BASE_URL}/mark_chat_unread"
+        response = requests.post(url, json={"chat_jid": chat_jid})
+        try:
+            result = response.json()
+        except json.JSONDecodeError:
+            return False, f"Error parsing response: {response.text}"
+        return bool(result.get("success", False)), result.get("message", "Unknown response")
+    except requests.RequestException as e:
+        return False, f"Request error: {str(e)}"
+    except Exception as e:
+        return False, f"Unexpected error: {str(e)}"

@@ -28,6 +28,7 @@ import (
 	"bytes"
 
 	"go.mau.fi/whatsmeow"
+	"go.mau.fi/whatsmeow/appstate"
 	waProto "go.mau.fi/whatsmeow/binary/proto"
 	"go.mau.fi/whatsmeow/proto/waCompanionReg"
 	"go.mau.fi/whatsmeow/proto/waMmsRetry"
@@ -755,6 +756,36 @@ type LeaveGroupResponse struct {
 	Message string `json:"message"`
 }
 
+// MarkChatReadRequest represents a request to mark a chat as read.
+type MarkChatReadRequest struct {
+	ChatJID    string   `json:"chat_jid"`
+	MessageIDs []string `json:"message_ids"`
+	SenderJID  string   `json:"sender_jid,omitempty"`
+	Timestamp  int64    `json:"timestamp,omitempty"`
+}
+
+// MarkChatUnreadRequest represents a request to mark a chat as unread.
+type MarkChatUnreadRequest struct {
+	ChatJID string `json:"chat_jid"`
+}
+
+// MarkChatResponse represents the response for mark-read / mark-unread.
+type MarkChatResponse struct {
+	Success bool   `json:"success"`
+	Message string `json:"message"`
+}
+
+// safeSendAppState calls cli.SendAppState recovering from any panic (e.g. uninitialized
+// app-state keys during session restore) and returns it as a regular error.
+func safeSendAppState(cli *whatsmeow.Client, ctx context.Context, patch appstate.PatchInfo) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("app state not ready: %v", r)
+		}
+	}()
+	return cli.SendAppState(ctx, patch)
+}
+
 // createWhatsAppGroup creates a new group on WhatsApp.
 func createWhatsAppGroup(client *whatsmeow.Client, messageStore *MessageStore, req CreateGroupRequest) CreateGroupResponse {
 	if !client.IsConnected() {
@@ -1294,6 +1325,94 @@ img{border:8px solid white;border-radius:8px;box-shadow:0 4px 20px rgba(0,0,0,.2
 			w.WriteHeader(http.StatusInternalServerError)
 		}
 		json.NewEncoder(w).Encode(resp)
+	})
+
+	// Handler for marking a chat as read
+	http.HandleFunc("/api/mark_chat_read", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		var req MarkChatReadRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.ChatJID == "" {
+			http.Error(w, "Invalid request: chat_jid is required", http.StatusBadRequest)
+			return
+		}
+		chatJID, err := types.ParseJID(req.ChatJID)
+		if err != nil {
+			http.Error(w, fmt.Sprintf("Invalid chat_jid: %v", err), http.StatusBadRequest)
+			return
+		}
+		var senderJID types.JID
+		if req.SenderJID != "" {
+			senderJID, err = types.ParseJID(req.SenderJID)
+			if err != nil {
+				http.Error(w, fmt.Sprintf("Invalid sender_jid: %v", err), http.StatusBadRequest)
+				return
+			}
+		}
+		ts := time.Now()
+		if req.Timestamp > 0 {
+			ts = time.Unix(req.Timestamp, 0)
+		}
+		if client == nil || !client.IsConnected() {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusServiceUnavailable)
+			json.NewEncoder(w).Encode(MarkChatResponse{Success: false, Message: "WhatsApp client not connected"})
+			return
+		}
+		ctx := context.Background()
+		// Send read receipts to the sender(s)
+		if len(req.MessageIDs) > 0 {
+			if err := client.MarkRead(ctx, req.MessageIDs, ts, chatJID, senderJID); err != nil {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusInternalServerError)
+				json.NewEncoder(w).Encode(MarkChatResponse{Success: false, Message: fmt.Sprintf("MarkRead error: %v", err)})
+				return
+			}
+		}
+		// Sync read state via app state so the unread badge clears on all devices
+		if err := safeSendAppState(client, ctx, appstate.BuildMarkChatAsRead(chatJID, true, ts, nil)); err != nil {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusInternalServerError)
+			json.NewEncoder(w).Encode(MarkChatResponse{Success: false, Message: fmt.Sprintf("AppState error: %v", err)})
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(MarkChatResponse{Success: true, Message: fmt.Sprintf("Chat %s marked as read", req.ChatJID)})
+	})
+
+	// Handler for marking a chat as unread
+	http.HandleFunc("/api/mark_chat_unread", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		var req MarkChatUnreadRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.ChatJID == "" {
+			http.Error(w, "Invalid request: chat_jid required", http.StatusBadRequest)
+			return
+		}
+		chatJID, err := types.ParseJID(req.ChatJID)
+		if err != nil {
+			http.Error(w, fmt.Sprintf("Invalid chat_jid: %v", err), http.StatusBadRequest)
+			return
+		}
+		if client == nil || !client.IsConnected() {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusServiceUnavailable)
+			json.NewEncoder(w).Encode(MarkChatResponse{Success: false, Message: "WhatsApp client not connected"})
+			return
+		}
+		ctx := context.Background()
+		if err := safeSendAppState(client, ctx, appstate.BuildMarkChatAsRead(chatJID, false, time.Time{}, nil)); err != nil {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusInternalServerError)
+			json.NewEncoder(w).Encode(MarkChatResponse{Success: false, Message: fmt.Sprintf("AppState error: %v", err)})
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(MarkChatResponse{Success: true, Message: fmt.Sprintf("Chat %s marked as unread", req.ChatJID)})
 	})
 
 	// Bind to loopback only — no auth on REST API, anyone on LAN could send messages.
