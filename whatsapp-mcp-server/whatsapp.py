@@ -1,4 +1,5 @@
 import sqlite3
+import unicodedata
 from datetime import datetime
 from dataclasses import dataclass
 from typing import Optional, List, Tuple
@@ -11,6 +12,21 @@ import audio
 MESSAGES_DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'whatsapp-bridge', 'store', 'messages.db')
 STORE_DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'whatsapp-bridge', 'store', 'whatsapp.db')
 WHATSAPP_API_BASE_URL = os.environ.get("WHATSAPP_API_BASE_URL", "http://localhost:8080/api")
+
+
+def _strip_accents(text: Optional[str]) -> Optional[str]:
+    """Lowercase and remove diacritics so searches match regardless of accents."""
+    if text is None:
+        return None
+    decomposed = unicodedata.normalize('NFD', text)
+    return ''.join(c for c in decomposed if unicodedata.category(c) != 'Mn').lower()
+
+
+def _connect_messages_db() -> sqlite3.Connection:
+    """Open the messages DB with an `unaccent` SQL function registered."""
+    conn = sqlite3.connect(MESSAGES_DB_PATH)
+    conn.create_function("unaccent", 1, _strip_accents, deterministic=True)
+    return conn
 
 def _normalize_phone(phone: str) -> str:
     return phone.replace('+', '').replace(' ', '').replace('-', '')
@@ -181,7 +197,7 @@ def list_messages(
 ) -> List[Message]:
     """Get messages matching the specified criteria with optional context."""
     try:
-        conn = sqlite3.connect(MESSAGES_DB_PATH)
+        conn = _connect_messages_db()
         cursor = conn.cursor()
         
         # Build base query
@@ -222,7 +238,7 @@ def list_messages(
             params.append(chat_jid)
             
         if query:
-            where_clauses.append("LOWER(messages.content) LIKE LOWER(?)")
+            where_clauses.append("unaccent(messages.content) LIKE unaccent(?)")
             params.append(f"%{query}%")
             
         if where_clauses:
@@ -375,7 +391,7 @@ def list_chats(
 ) -> List[Chat]:
     """Get chats matching the specified criteria."""
     try:
-        conn = sqlite3.connect(MESSAGES_DB_PATH)
+        conn = _connect_messages_db()
         cursor = conn.cursor()
         
         # Build base query
@@ -400,7 +416,7 @@ def list_chats(
         params = []
         
         if query:
-            where_clauses.append("(LOWER(chats.name) LIKE LOWER(?) OR chats.jid LIKE ?)")
+            where_clauses.append("(unaccent(chats.name) LIKE unaccent(?) OR chats.jid LIKE ?)")
             params.extend([f"%{query}%", f"%{query}%"])
             
         if where_clauses:
