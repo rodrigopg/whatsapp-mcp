@@ -1335,7 +1335,7 @@ img{border:8px solid white;border-radius:8px;box-shadow:0 4px 20px rgba(0,0,0,.2
 		}
 		var req MarkChatReadRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.ChatJID == "" {
-			http.Error(w, "Invalid request: chat_jid and message_ids required", http.StatusBadRequest)
+			http.Error(w, "Invalid request: chat_jid is required", http.StatusBadRequest)
 			return
 		}
 		chatJID, err := types.ParseJID(req.ChatJID)
