@@ -14,7 +14,9 @@ from whatsapp import (
     send_audio_message as whatsapp_audio_voice_message,
     download_media as whatsapp_download_media,
     create_group as whatsapp_create_group,
-    leave_group as whatsapp_leave_group
+    leave_group as whatsapp_leave_group,
+    mark_chat_read as whatsapp_mark_chat_read,
+    mark_chat_unread as whatsapp_mark_chat_unread
 )
 
 # Initialize FastMCP server
@@ -291,6 +293,41 @@ def leave_group(jid: str) -> Dict[str, Any]:
         Dict with success (bool) and message (str).
     """
     success, message = whatsapp_leave_group(jid)
+    return {"success": success, "message": message}
+
+
+@mcp.tool()
+def mark_chat_as_read(
+    chat_jid: str,
+    message_ids: List[str],
+    sender_jid: Optional[str] = None,
+    timestamp: Optional[int] = None
+) -> Dict[str, Any]:
+    """Mark a WhatsApp chat as read by sending read receipts for the given messages.
+
+    Args:
+        chat_jid: The JID of the chat (e.g. 5511999999999@s.whatsapp.net or group@g.us)
+        message_ids: List of message IDs to mark as read
+        sender_jid: Optional sender JID (required for group messages)
+        timestamp: Optional Unix timestamp in seconds; defaults to now
+    """
+    success, message = whatsapp_mark_chat_read(
+        chat_jid,
+        message_ids,
+        sender_jid=sender_jid or "",
+        timestamp=timestamp or 0,
+    )
+    return {"success": success, "message": message}
+
+
+@mcp.tool()
+def mark_chat_as_unread(chat_jid: str) -> Dict[str, Any]:
+    """Mark a WhatsApp chat as unread (app-state sync — affects WhatsApp app badge).
+
+    Args:
+        chat_jid: The JID of the chat (e.g. 5511999999999@s.whatsapp.net or group@g.us)
+    """
+    success, message = whatsapp_mark_chat_unread(chat_jid)
     return {"success": success, "message": message}
 
 
