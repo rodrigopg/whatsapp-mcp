@@ -769,6 +769,14 @@ type MarkChatUnreadRequest struct {
 	ChatJID string `json:"chat_jid"`
 }
 
+// ArchiveChatRequest represents a request to archive or unarchive a chat.
+// Archive is a pointer so an omitted field is rejected rather than silently
+// defaulting to false (which would unarchive on an "archive" endpoint).
+type ArchiveChatRequest struct {
+	ChatJID string `json:"chat_jid"`
+	Archive *bool  `json:"archive"`
+}
+
 // MarkChatResponse represents the response for mark-read / mark-unread.
 type MarkChatResponse struct {
 	Success bool   `json:"success"`
@@ -1413,6 +1421,52 @@ img{border:8px solid white;border-radius:8px;box-shadow:0 4px 20px rgba(0,0,0,.2
 		}
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(MarkChatResponse{Success: true, Message: fmt.Sprintf("Chat %s marked as unread", req.ChatJID)})
+	})
+
+	// Handler for archiving / unarchiving a chat
+	http.HandleFunc("/api/archive_chat", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		var req ArchiveChatRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, fmt.Sprintf("Invalid request format: %v", err), http.StatusBadRequest)
+			return
+		}
+		if req.ChatJID == "" {
+			http.Error(w, "Invalid request: chat_jid required", http.StatusBadRequest)
+			return
+		}
+		if req.Archive == nil {
+			http.Error(w, "Invalid request: archive (true|false) required", http.StatusBadRequest)
+			return
+		}
+		chatJID, err := types.ParseJID(req.ChatJID)
+		if err != nil {
+			http.Error(w, fmt.Sprintf("Invalid chat_jid: %v", err), http.StatusBadRequest)
+			return
+		}
+		if client == nil || !client.IsConnected() {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusServiceUnavailable)
+			json.NewEncoder(w).Encode(MarkChatResponse{Success: false, Message: "WhatsApp client not connected"})
+			return
+		}
+		ctx := context.Background()
+		// last message timestamp/key are optional; zero values are accepted by BuildArchive.
+		if err := safeSendAppState(client, ctx, appstate.BuildArchive(chatJID, *req.Archive, time.Time{}, nil)); err != nil {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusInternalServerError)
+			json.NewEncoder(w).Encode(MarkChatResponse{Success: false, Message: fmt.Sprintf("AppState error: %v", err)})
+			return
+		}
+		action := "archived"
+		if !*req.Archive {
+			action = "unarchived"
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(MarkChatResponse{Success: true, Message: fmt.Sprintf("Chat %s %s", req.ChatJID, action)})
 	})
 
 	// Bind to loopback only — no auth on REST API, anyone on LAN could send messages.
