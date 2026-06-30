@@ -1,7 +1,12 @@
 *.db
 claude_desktop_config.json
-whatsapp.logwhatsapp-bridge/bridge.err.log
+whatsapp.log
+whatsapp-bridge/bridge.err.log
 whatsapp-bridge/bridge.log
 whatsapp-bridge/whatsapp-bridge
 whatsapp-bridge/whatsapp-client
+whatsapp-bridge/transcription.env
 whatsapp-bridge-personal/
+
+# systemd EnvironmentFile (sem export, contém Groq key)
+whatsapp-bridge/transcription.systemd.env
