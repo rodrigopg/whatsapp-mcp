@@ -1315,6 +1315,44 @@ img{border:8px solid white;border-radius:8px;box-shadow:0 4px 20px rgba(0,0,0,.2
 		json.NewEncoder(w).Encode(resp)
 	})
 
+	// Handler for getting group info (name + participants)
+	http.HandleFunc("/api/group_info", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		jid, err := types.ParseJID(r.URL.Query().Get("jid"))
+		if err != nil {
+			http.Error(w, "Invalid JID", http.StatusBadRequest)
+			return
+		}
+		if client == nil || !client.IsConnected() {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusServiceUnavailable)
+			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": "WhatsApp client not connected"})
+			return
+		}
+		groupInfo, err := client.GetGroupInfo(context.Background(), jid)
+		w.Header().Set("Content-Type", "application/json")
+		if err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": err.Error()})
+			return
+		}
+		participants := make([]map[string]string, 0, len(groupInfo.Participants))
+		for _, p := range groupInfo.Participants {
+			participants = append(participants, map[string]string{
+				"jid":          p.JID.String(),
+				"phone_number": p.PhoneNumber.User,
+				"lid":          p.LID.String(),
+				"display_name": p.DisplayName,
+			})
+		}
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"success": true, "name": groupInfo.Name, "participants": participants,
+		})
+	})
+
 	// Handler for leaving a group
 	http.HandleFunc("/api/leave_group", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
