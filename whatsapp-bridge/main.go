@@ -561,6 +561,90 @@ func resolveToPN(client *whatsmeow.Client, jid types.JID) types.JID {
 	return pn
 }
 
+// resolveContactJIDs returns every JID (regular PN + LID) that maps to a phone
+// number, using the whatsmeow LID store API (never the internal lid_map table).
+// Parity with the Python _resolve_phone_to_jids: PN first, then the LID if known.
+func resolveContactJIDs(client *whatsmeow.Client, phone string) []string {
+	phone = normalizePhone(phone)
+	jids := []string{phone + "@" + types.DefaultUserServer}
+	if client == nil || client.Store == nil || client.Store.LIDs == nil {
+		return jids
+	}
+	pnJID := types.JID{User: phone, Server: types.DefaultUserServer}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if lid, err := client.Store.LIDs.GetLIDForPN(ctx, pnJID); err == nil && !lid.IsEmpty() {
+		jids = append(jids, lid.String())
+	}
+	return jids
+}
+
+// searchContactsBridge finds contacts by name or phone across the three sources
+// the bridge already owns: the whatsmeow contact store, the senders table, and
+// the chats table. Dedups by JID and excludes groups. Parity with the Python
+// search_contacts (which read whatsmeow_contacts directly plus a chats fallback).
+func searchContactsBridge(client *whatsmeow.Client, store *MessageStore, query string) []ContactHit {
+	q := strings.ToLower(strings.TrimSpace(query))
+	seen := make(map[string]bool)
+	var hits []ContactHit
+	add := func(jid, phone, name string) {
+		if jid == "" || seen[jid] || strings.HasSuffix(jid, "@"+types.GroupServer) {
+			return
+		}
+		seen[jid] = true
+		hits = append(hits, ContactHit{JID: jid, PhoneNumber: phone, Name: name})
+	}
+
+	// Source 1: whatsmeow contact store (real names + LID), via the lib API.
+	if client != nil && client.Store != nil && client.Store.Contacts != nil {
+		if contacts, err := client.Store.Contacts.GetAllContacts(context.Background()); err == nil {
+			for jid, info := range contacts {
+				name := info.FullName
+				if name == "" {
+					name = info.PushName
+				}
+				js := jid.String()
+				if !strings.Contains(strings.ToLower(name), q) && !strings.Contains(strings.ToLower(js), q) {
+					continue
+				}
+				phone := jid.User
+				if jid.Server == types.HiddenUserServer {
+					if pn := resolveToPN(client, jid); pn.Server == types.DefaultUserServer {
+						phone = pn.User
+					}
+				}
+				add(js, phone, name)
+			}
+		}
+	}
+
+	// Sources 2 & 3: senders + chats tables (messages.db), for contacts the
+	// store doesn't have. LIKE with lowercase for accent-insensitive-ish parity.
+	if store != nil && store.db != nil {
+		like := "%" + q + "%"
+		rows, err := store.db.Query(
+			`SELECT jid, name FROM chats
+			 WHERE (LOWER(name) LIKE ? OR LOWER(jid) LIKE ?) AND jid NOT LIKE '%@`+types.GroupServer+`'
+			 UNION
+			 SELECT jid, COALESCE(NULLIF(full_name,''), NULLIF(push_name,'')) AS name FROM senders
+			 WHERE (LOWER(full_name) LIKE ? OR LOWER(push_name) LIKE ? OR LOWER(jid) LIKE ?)
+			 LIMIT 100`,
+			like, like, like, like, like,
+		)
+		if err == nil {
+			defer rows.Close()
+			for rows.Next() {
+				var jid string
+				var name sql.NullString
+				if rows.Scan(&jid, &name) == nil {
+					add(jid, strings.SplitN(jid, "@", 2)[0], name.String)
+				}
+			}
+		}
+	}
+	return hits
+}
+
 // migrateLIDChats merges any chat stored under a LID JID into its PN JID.
 // Idempotent: chats with no known mapping are left for the next startup.
 func migrateLIDChats(client *whatsmeow.Client, store *MessageStore, logger waLog.Logger) {
@@ -777,10 +861,207 @@ type ArchiveChatRequest struct {
 	Archive *bool  `json:"archive"`
 }
 
+// ReactRequest represents a request to react to a message. Emoji may be empty
+// to remove an existing reaction.
+type ReactRequest struct {
+	ChatJID   string `json:"chat_jid"`
+	MessageID string `json:"message_id"`
+	Emoji     string `json:"emoji"`
+	FromMe    bool   `json:"from_me"`
+}
+
+// EditRequest represents a request to edit the text of a previously sent message.
+type EditRequest struct {
+	ChatJID   string `json:"chat_jid"`
+	MessageID string `json:"message_id"`
+	NewText   string `json:"new_text"`
+	FromMe    bool   `json:"from_me"`
+}
+
+// RevokeRequest represents a request to revoke (delete for everyone) a message.
+type RevokeRequest struct {
+	ChatJID   string `json:"chat_jid"`
+	MessageID string `json:"message_id"`
+	FromMe    bool   `json:"from_me"`
+}
+
+// actionSenderJID derives the sender JID to use for react/revoke actions.
+// When fromMe is true the sender is the local account (own messages are the
+// common case for react/edit/revoke). When fromMe is false we don't have the
+// original message author available here, so we fall back to chatJID, which
+// is only correct for 1:1 chats; group-chat revoke/react on someone else's
+// message needs the participant JID plumbed in from the caller (not yet supported).
+func actionSenderJID(ownID *types.JID, chatJID types.JID, fromMe bool) types.JID {
+	if fromMe && ownID != nil {
+		return ownID.ToNonAD()
+	}
+	return chatJID
+}
+
+// handleReact returns the handler for POST /api/react. Empty emoji removes an
+// existing reaction. Reacting to another participant's message in a group
+// (from_me=false) is rejected: actionSenderJID would fall back to the group's
+// own JID as sender, producing a malformed (but silently-accepted) message key.
+func handleReact(client *whatsmeow.Client) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		var req ReactRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.ChatJID == "" || req.MessageID == "" {
+			http.Error(w, "Invalid request: chat_jid and message_id required", http.StatusBadRequest)
+			return
+		}
+		chatJID, err := types.ParseJID(req.ChatJID)
+		if err != nil {
+			http.Error(w, fmt.Sprintf("Invalid chat_jid: %v", err), http.StatusBadRequest)
+			return
+		}
+		if !req.FromMe && chatJID.Server == types.GroupServer {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(MarkChatResponse{Success: false, Message: "reacting to another participant's message in a group is not supported (participant JID unavailable)"})
+			return
+		}
+		if client == nil || !client.IsConnected() {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusServiceUnavailable)
+			json.NewEncoder(w).Encode(MarkChatResponse{Success: false, Message: "WhatsApp client not connected"})
+			return
+		}
+		senderJID := actionSenderJID(client.Store.ID, chatJID, req.FromMe)
+		builtMsg := client.BuildReaction(chatJID, senderJID, types.MessageID(req.MessageID), req.Emoji)
+		if _, err := client.SendMessage(context.Background(), chatJID, builtMsg); err != nil {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusInternalServerError)
+			json.NewEncoder(w).Encode(MarkChatResponse{Success: false, Message: fmt.Sprintf("SendMessage error: %v", err)})
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(MarkChatResponse{Success: true, Message: fmt.Sprintf("Reaction sent to message %s", req.MessageID)})
+	}
+}
+
+// handleEdit returns the handler for POST /api/edit. Editing is always the
+// caller's own message (WhatsApp only allows editing your own messages), so
+// there's no group/from_me ambiguity to guard against here.
+func handleEdit(client *whatsmeow.Client) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		var req EditRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.ChatJID == "" || req.MessageID == "" {
+			http.Error(w, "Invalid request: chat_jid and message_id required", http.StatusBadRequest)
+			return
+		}
+		chatJID, err := types.ParseJID(req.ChatJID)
+		if err != nil {
+			http.Error(w, fmt.Sprintf("Invalid chat_jid: %v", err), http.StatusBadRequest)
+			return
+		}
+		if client == nil || !client.IsConnected() {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusServiceUnavailable)
+			json.NewEncoder(w).Encode(MarkChatResponse{Success: false, Message: "WhatsApp client not connected"})
+			return
+		}
+		newContent := &waProto.Message{Conversation: proto.String(req.NewText)}
+		builtMsg := client.BuildEdit(chatJID, types.MessageID(req.MessageID), newContent)
+		if _, err := client.SendMessage(context.Background(), chatJID, builtMsg); err != nil {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusInternalServerError)
+			json.NewEncoder(w).Encode(MarkChatResponse{Success: false, Message: fmt.Sprintf("SendMessage error: %v", err)})
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(MarkChatResponse{Success: true, Message: fmt.Sprintf("Message %s edited", req.MessageID)})
+	}
+}
+
+// handleRevoke returns the handler for POST /api/revoke. Revoking another
+// participant's message in a group (from_me=false) is rejected for the same
+// reason as handleReact: no participant JID available, so actionSenderJID
+// would fall back to the group's own JID and produce a malformed revoke.
+func handleRevoke(client *whatsmeow.Client) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		var req RevokeRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.ChatJID == "" || req.MessageID == "" {
+			http.Error(w, "Invalid request: chat_jid and message_id required", http.StatusBadRequest)
+			return
+		}
+		chatJID, err := types.ParseJID(req.ChatJID)
+		if err != nil {
+			http.Error(w, fmt.Sprintf("Invalid chat_jid: %v", err), http.StatusBadRequest)
+			return
+		}
+		if !req.FromMe && chatJID.Server == types.GroupServer {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(MarkChatResponse{Success: false, Message: "revoking another participant's message in a group is not supported (participant JID unavailable)"})
+			return
+		}
+		if client == nil || !client.IsConnected() {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusServiceUnavailable)
+			json.NewEncoder(w).Encode(MarkChatResponse{Success: false, Message: "WhatsApp client not connected"})
+			return
+		}
+		senderJID := actionSenderJID(client.Store.ID, chatJID, req.FromMe)
+		builtMsg := client.BuildRevoke(chatJID, senderJID, types.MessageID(req.MessageID))
+		if _, err := client.SendMessage(context.Background(), chatJID, builtMsg); err != nil {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusInternalServerError)
+			json.NewEncoder(w).Encode(MarkChatResponse{Success: false, Message: fmt.Sprintf("SendMessage error: %v", err)})
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(MarkChatResponse{Success: true, Message: fmt.Sprintf("Message %s revoked", req.MessageID)})
+	}
+}
+
 // MarkChatResponse represents the response for mark-read / mark-unread.
 type MarkChatResponse struct {
 	Success bool   `json:"success"`
 	Message string `json:"message"`
+}
+
+// ResolveContactResponse is the response for GET /api/resolve_contact. It moves
+// phone->JID resolution (regular + LID) into the bridge, which owns whatsmeow,
+// so the Python side no longer reads the library's internal whatsmeow_lid_map
+// table directly (decoupling from the lib's physical schema).
+type ResolveContactResponse struct {
+	Success bool     `json:"success"`
+	Message string   `json:"message,omitempty"`
+	Phone   string   `json:"phone,omitempty"`
+	JIDs    []string `json:"jids,omitempty"`
+}
+
+// ContactHit is one contact returned by GET /api/search_contacts.
+type ContactHit struct {
+	JID         string `json:"jid"`
+	PhoneNumber string `json:"phone_number"`
+	Name        string `json:"name"`
+}
+
+// SearchContactsResponse is the response for GET /api/search_contacts.
+type SearchContactsResponse struct {
+	Success  bool         `json:"success"`
+	Message  string       `json:"message,omitempty"`
+	Contacts []ContactHit `json:"contacts,omitempty"`
+}
+
+// normalizePhone strips '+', spaces and '-' from a phone number so lookups match
+// regardless of formatting. Parity with the Python _normalize_phone helper.
+func normalizePhone(phone string) string {
+	r := strings.NewReplacer("+", "", " ", "", "-", "")
+	return r.Replace(phone)
 }
 
 // safeSendAppState calls cli.SendAppState recovering from any panic (e.g. uninitialized
@@ -1505,6 +1786,63 @@ img{border:8px solid white;border-radius:8px;box-shadow:0 4px 20px rgba(0,0,0,.2
 		}
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(MarkChatResponse{Success: true, Message: fmt.Sprintf("Chat %s %s", req.ChatJID, action)})
+	})
+
+	// Handler for reacting to a message. Empty emoji removes an existing reaction.
+	http.HandleFunc("/api/react", handleReact(client))
+
+	// Handler for editing the text of a previously sent message.
+	http.HandleFunc("/api/edit", handleEdit(client))
+
+	// Handler for revoking (deleting for everyone) a previously sent message.
+	http.HandleFunc("/api/revoke", handleRevoke(client))
+
+	// Handler for resolving a phone number to all its JIDs (regular + LID).
+	// Replaces the Python-side direct read of whatsmeow_lid_map.
+	http.HandleFunc("/api/resolve_contact", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		phone := strings.TrimSpace(r.URL.Query().Get("phone"))
+		if phone == "" {
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(ResolveContactResponse{Success: false, Message: "phone required"})
+			return
+		}
+		if client == nil || !client.IsConnected() {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			json.NewEncoder(w).Encode(ResolveContactResponse{Success: false, Message: "WhatsApp client not connected"})
+			return
+		}
+		jids := resolveContactJIDs(client, phone)
+		json.NewEncoder(w).Encode(ResolveContactResponse{Success: true, Phone: normalizePhone(phone), JIDs: jids})
+	})
+
+	// Handler for searching contacts by name or phone across the three sources
+	// the bridge owns (contact store + senders + chats). Replaces the Python-side
+	// direct read of whatsmeow_contacts. Degrades to senders+chats when the client
+	// is offline (the contact store is unavailable but the local tables aren't).
+	http.HandleFunc("/api/search_contacts", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		query := strings.TrimSpace(r.URL.Query().Get("query"))
+		if query == "" {
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(SearchContactsResponse{Success: false, Message: "query required"})
+			return
+		}
+		msg := ""
+		if client == nil || !client.IsConnected() {
+			// Degrade gracefully: local tables still answer, contact store won't.
+			msg = "client offline: contact store skipped, searched senders+chats only"
+		}
+		hits := searchContactsBridge(client, messageStore, query)
+		json.NewEncoder(w).Encode(SearchContactsResponse{Success: true, Message: msg, Contacts: hits})
 	})
 
 	// Bind to loopback only — no auth on REST API, anyone on LAN could send messages.

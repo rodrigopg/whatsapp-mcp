@@ -10,3 +10,7 @@ whatsapp-bridge-personal/
 
 # systemd EnvironmentFile (sem export, contém Groq key)
 whatsapp-bridge/transcription.systemd.env
+
+# Reversa
+.reversa/config.user.toml
+_reversa_sdd/

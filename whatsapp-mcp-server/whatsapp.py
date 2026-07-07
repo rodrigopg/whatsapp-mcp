@@ -10,7 +10,9 @@ import json
 import audio
 
 MESSAGES_DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'whatsapp-bridge', 'store', 'messages.db')
-STORE_DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'whatsapp-bridge', 'store', 'whatsapp.db')
+# whatsapp.db (whatsmeow session/lid_map/contacts) is no longer read from Python.
+# Contact/LID resolution goes through the bridge REST API (see _resolve_phone_to_jids,
+# search_contacts). This decouples the MCP server from the whatsmeow internal schema.
 WHATSAPP_API_BASE_URL = os.environ.get("WHATSAPP_API_BASE_URL", "http://localhost:8080/api")
 
 
@@ -32,43 +34,44 @@ def _normalize_phone(phone: str) -> str:
     return phone.replace('+', '').replace(' ', '').replace('-', '')
 
 def _resolve_phone_to_jids(phone: str) -> List[str]:
-    """Return all JIDs (regular + LID) that match a phone number."""
+    """Return all JIDs (regular + LID) that match a phone number.
+
+    Delegates to the bridge (GET /api/resolve_contact), which owns whatsmeow and
+    resolves LID via the library API. No longer reads the internal whatsmeow_lid_map
+    table directly, so a whatsmeow schema change can't break resolution silently.
+
+    Behavior deltas vs the old direct-DB read: (a) resolution is exact-match only
+    (the old fuzzy suffix fallback is gone); (b) requires the bridge to be running —
+    if it's down, falls back to PN-only (no LID).
+    """
     phone = _normalize_phone(phone)
-    jids = [f"{phone}@s.whatsapp.net"]
     try:
-        conn = sqlite3.connect(STORE_DB_PATH)
-        row = conn.execute(
-            "SELECT lid, pn FROM whatsmeow_lid_map WHERE pn = ?", (phone,)
-        ).fetchone()
-        if not row:
-            suffix = phone[-10:]
-            row = conn.execute(
-                "SELECT lid, pn FROM whatsmeow_lid_map WHERE pn LIKE ?", (f"%{suffix}",)
-            ).fetchone()
-        if row:
-            lid, stored_pn = row
-            jids.append(f"{lid}@lid")
-            if stored_pn != phone:
-                jids.append(f"{stored_pn}@s.whatsapp.net")
-        conn.close()
-    except Exception:
+        r = requests.get(f"{WHATSAPP_API_BASE_URL}/resolve_contact",
+                         params={"phone": phone}, timeout=10)
+        if r.status_code == 200:
+            body = r.json()
+            if body.get("success") and body.get("jids"):
+                return body["jids"]
+    except (requests.RequestException, json.JSONDecodeError):
         pass
-    return jids
+    # Fallback: bridge unreachable — return at least the PN JID so callers still work.
+    return [f"{phone}@s.whatsapp.net"]
 
 def _get_contact_name(phone: str) -> Optional[str]:
-    """Look up contact name in whatsapp.db by phone number."""
+    """Look up a contact name via the bridge search endpoint (by phone number).
+
+    Requires the bridge to be running; returns None if it's down (no local DB fallback).
+    """
     phone = _normalize_phone(phone)
     try:
-        conn = sqlite3.connect(STORE_DB_PATH)
-        row = conn.execute(
-            """SELECT full_name, push_name FROM whatsmeow_contacts
-               WHERE their_jid = ? OR their_jid LIKE ?""",
-            (f"{phone}@s.whatsapp.net", f"{phone}%")
-        ).fetchone()
-        conn.close()
-        if row:
-            return row[0] or row[1]
-    except Exception:
+        r = requests.get(f"{WHATSAPP_API_BASE_URL}/search_contacts",
+                         params={"query": phone}, timeout=10)
+        if r.status_code == 200:
+            body = r.json()
+            for c in body.get("contacts", []):
+                if _normalize_phone(c.get("phone_number", "")) == phone and c.get("name"):
+                    return c["name"]
+    except (requests.RequestException, json.JSONDecodeError):
         pass
     return None
 
@@ -457,59 +460,33 @@ def list_chats(
 
 
 def search_contacts(query: str) -> List[Contact]:
-    """Search contacts by name or phone number."""
-    search_pattern = f'%{query}%'
-    result = []
-    seen_jids = set()
+    """Search contacts by name or phone number.
 
-    # Search whatsapp.db first (has real names + LID contacts)
+    Delegates to the bridge (GET /api/search_contacts), which queries the three
+    sources it owns (whatsmeow contact store + senders + chats). No longer reads
+    whatsmeow_contacts/whatsmeow_lid_map directly, decoupling from the lib schema.
+
+    Behavior deltas vs the old direct-DB read: (a) matching is exact-match via the
+    bridge (no fuzzy suffix fallback); (b) requires the bridge to be running —
+    returns an empty list if it's down.
+    """
     try:
-        conn = sqlite3.connect(STORE_DB_PATH)
-        rows = conn.execute("""
-            SELECT their_jid, full_name, push_name
-            FROM whatsmeow_contacts
-            WHERE (LOWER(full_name) LIKE LOWER(?)
-                   OR LOWER(push_name) LIKE LOWER(?)
-                   OR their_jid LIKE ?)
-              AND their_jid NOT LIKE '%@g.us'
-            ORDER BY full_name, push_name
-            LIMIT 50
-        """, (search_pattern, search_pattern, search_pattern)).fetchall()
-        for jid, full_name, push_name in rows:
-            name = full_name or push_name
-            raw = jid.split('@')[0]
-            if jid.endswith('@lid'):
-                pn_row = conn.execute(
-                    "SELECT pn FROM whatsmeow_lid_map WHERE lid = ?", (raw,)
-                ).fetchone()
-                phone = pn_row[0] if pn_row else raw
-            else:
-                phone = raw
-            if jid not in seen_jids:
-                seen_jids.add(jid)
-                result.append(Contact(phone_number=phone, name=name, jid=jid))
-        conn.close()
-    except Exception:
-        pass
-
-    # Fallback: messages.db chats (catches contacts not in store)
-    try:
-        conn = sqlite3.connect(MESSAGES_DB_PATH)
-        rows = conn.execute("""
-            SELECT DISTINCT jid, name FROM chats
-            WHERE (LOWER(name) LIKE LOWER(?) OR LOWER(jid) LIKE LOWER(?))
-              AND jid NOT LIKE '%@g.us'
-            ORDER BY name, jid LIMIT 50
-        """, (search_pattern, search_pattern)).fetchall()
-        for jid, name in rows:
-            if jid not in seen_jids:
-                seen_jids.add(jid)
-                result.append(Contact(phone_number=jid.split('@')[0], name=name, jid=jid))
-        conn.close()
-    except Exception as e:
-        print(f"Database error: {e}")
-
-    return result
+        r = requests.get(f"{WHATSAPP_API_BASE_URL}/search_contacts",
+                         params={"query": query}, timeout=10)
+        if r.status_code == 200:
+            body = r.json()
+            if body.get("success"):
+                return [
+                    Contact(
+                        phone_number=c.get("phone_number", ""),
+                        name=c.get("name"),
+                        jid=c.get("jid", ""),
+                    )
+                    for c in body.get("contacts", [])
+                ]
+    except (requests.RequestException, json.JSONDecodeError) as e:
+        print(f"search_contacts: bridge error: {e}")
+    return []
 
 
 def get_contact_chats(jid: str, limit: int = 20, page: int = 0) -> List[Chat]:
@@ -924,6 +901,157 @@ def mark_chat_unread(chat_jid: str) -> Tuple[bool, str]:
             return False, "chat_jid is required"
         url = f"{WHATSAPP_API_BASE_URL}/mark_chat_unread"
         response = requests.post(url, json={"chat_jid": chat_jid})
+        try:
+            result = response.json()
+        except json.JSONDecodeError:
+            return False, f"Error parsing response: {response.text}"
+        return bool(result.get("success", False)), result.get("message", "Unknown response")
+    except requests.RequestException as e:
+        return False, f"Request error: {str(e)}"
+    except Exception as e:
+        return False, f"Unexpected error: {str(e)}"
+
+
+def get_group_info(jid: str) -> Tuple[bool, str, Optional[dict]]:
+    try:
+        if not jid or not jid.strip():
+            return False, "Group JID is required", None
+        url = f"{WHATSAPP_API_BASE_URL}/group_info"
+        response = requests.get(url, params={"jid": jid})
+        try:
+            result = response.json()
+        except json.JSONDecodeError:
+            return False, f"Error parsing response: {response.text}", None
+        success = bool(result.get("success", False))
+        if not success:
+            return False, result.get("message", "Unknown response"), None
+        info = {
+            "name": result.get("name", ""),
+            "participants": result.get("participants", []),
+        }
+        return True, "Group info retrieved", info
+    except requests.RequestException as e:
+        return False, f"Request error: {str(e)}", None
+    except Exception as e:
+        return False, f"Unexpected error: {str(e)}", None
+
+
+def archive_chat(chat_jid: str, archive: bool) -> Tuple[bool, str]:
+    try:
+        if not chat_jid or not chat_jid.strip():
+            return False, "chat_jid is required"
+        url = f"{WHATSAPP_API_BASE_URL}/archive_chat"
+        response = requests.post(url, json={"chat_jid": chat_jid, "archive": archive})
+        try:
+            result = response.json()
+        except json.JSONDecodeError:
+            return False, f"Error parsing response: {response.text}"
+        return bool(result.get("success", False)), result.get("message", "Unknown response")
+    except requests.RequestException as e:
+        return False, f"Request error: {str(e)}"
+    except Exception as e:
+        return False, f"Unexpected error: {str(e)}"
+
+
+def resolve_contact(phone: str) -> Tuple[bool, str, List[str]]:
+    try:
+        if not phone or not phone.strip():
+            return False, "phone is required", []
+        url = f"{WHATSAPP_API_BASE_URL}/resolve_contact"
+        response = requests.get(url, params={"phone": phone})
+        try:
+            result = response.json()
+        except json.JSONDecodeError:
+            return False, f"Error parsing response: {response.text}", []
+        success = bool(result.get("success", False))
+        jids = result.get("jids", []) or []
+        return success, result.get("message", "Contact resolved" if success else "Unknown response"), jids
+    except requests.RequestException as e:
+        return False, f"Request error: {str(e)}", []
+    except Exception as e:
+        return False, f"Unexpected error: {str(e)}", []
+
+
+def react_to_message(chat_jid: str, message_id: str, emoji: str, from_me: bool = True) -> Tuple[bool, str]:
+    """React to a message with an emoji ("" removes the reaction).
+
+    from_me defaults True (your own message). from_me=False works only in direct
+    chats; in group chats the bridge returns an error because the original
+    sender's JID isn't available.
+    """
+    try:
+        if not chat_jid or not chat_jid.strip():
+            return False, "chat_jid is required"
+        if not message_id or not message_id.strip():
+            return False, "message_id is required"
+        url = f"{WHATSAPP_API_BASE_URL}/react"
+        payload = {
+            "chat_jid": chat_jid,
+            "message_id": message_id,
+            "emoji": emoji,
+            "from_me": from_me,
+        }
+        response = requests.post(url, json=payload)
+        try:
+            result = response.json()
+        except json.JSONDecodeError:
+            return False, f"Error parsing response: {response.text}"
+        return bool(result.get("success", False)), result.get("message", "Unknown response")
+    except requests.RequestException as e:
+        return False, f"Request error: {str(e)}"
+    except Exception as e:
+        return False, f"Unexpected error: {str(e)}"
+
+
+def edit_message(chat_jid: str, message_id: str, new_text: str, from_me: bool = True) -> Tuple[bool, str]:
+    """Edit the text of a previously sent message.
+
+    from_me is accepted for API symmetry but ignored — WhatsApp (whatsmeow's
+    BuildEdit) only allows editing your own messages; the bridge never reads it.
+    """
+    try:
+        if not chat_jid or not chat_jid.strip():
+            return False, "chat_jid is required"
+        if not message_id or not message_id.strip():
+            return False, "message_id is required"
+        url = f"{WHATSAPP_API_BASE_URL}/edit"
+        payload = {
+            "chat_jid": chat_jid,
+            "message_id": message_id,
+            "new_text": new_text,
+            "from_me": from_me,
+        }
+        response = requests.post(url, json=payload)
+        try:
+            result = response.json()
+        except json.JSONDecodeError:
+            return False, f"Error parsing response: {response.text}"
+        return bool(result.get("success", False)), result.get("message", "Unknown response")
+    except requests.RequestException as e:
+        return False, f"Request error: {str(e)}"
+    except Exception as e:
+        return False, f"Unexpected error: {str(e)}"
+
+
+def delete_message(chat_jid: str, message_id: str, from_me: bool = True) -> Tuple[bool, str]:
+    """Delete a message for everyone (revoke).
+
+    from_me defaults True (your own message). from_me=False works only in direct
+    chats; in group chats the bridge returns an error because the original
+    sender's JID isn't available.
+    """
+    try:
+        if not chat_jid or not chat_jid.strip():
+            return False, "chat_jid is required"
+        if not message_id or not message_id.strip():
+            return False, "message_id is required"
+        url = f"{WHATSAPP_API_BASE_URL}/revoke"
+        payload = {
+            "chat_jid": chat_jid,
+            "message_id": message_id,
+            "from_me": from_me,
+        }
+        response = requests.post(url, json=payload)
         try:
             result = response.json()
         except json.JSONDecodeError:

@@ -16,7 +16,13 @@ from whatsapp import (
     create_group as whatsapp_create_group,
     leave_group as whatsapp_leave_group,
     mark_chat_read as whatsapp_mark_chat_read,
-    mark_chat_unread as whatsapp_mark_chat_unread
+    mark_chat_unread as whatsapp_mark_chat_unread,
+    get_group_info as whatsapp_get_group_info,
+    archive_chat as whatsapp_archive_chat,
+    resolve_contact as whatsapp_resolve_contact,
+    react_to_message as whatsapp_react_to_message,
+    edit_message as whatsapp_edit_message,
+    delete_message as whatsapp_delete_message
 )
 
 # Initialize FastMCP server
@@ -328,6 +334,106 @@ def mark_chat_as_unread(chat_jid: str) -> Dict[str, Any]:
         chat_jid: The JID of the chat (e.g. 5511999999999@s.whatsapp.net or group@g.us)
     """
     success, message = whatsapp_mark_chat_unread(chat_jid)
+    return {"success": success, "message": message}
+
+
+@mcp.tool()
+def get_group_info(jid: str) -> Dict[str, Any]:
+    """Get a WhatsApp group's name and participant list.
+
+    Args:
+        jid: The group JID (e.g. 120363012345678901@g.us)
+    """
+    success, message, info = whatsapp_get_group_info(jid)
+    result: Dict[str, Any] = {"success": success, "message": message}
+    if info:
+        result.update(info)
+    return result
+
+
+@mcp.tool()
+def archive_chat(chat_jid: str, archive: bool = True) -> Dict[str, Any]:
+    """Archive or unarchive a WhatsApp chat (app-state sync — affects WhatsApp app).
+
+    Args:
+        chat_jid: The JID of the chat (e.g. 5511999999999@s.whatsapp.net or group@g.us)
+        archive: True to archive, False to unarchive
+    """
+    success, message = whatsapp_archive_chat(chat_jid, archive)
+    return {"success": success, "message": message}
+
+
+@mcp.tool()
+def resolve_contact(phone: str) -> Dict[str, Any]:
+    """Resolve a phone number to its WhatsApp JIDs (regular + LID, if any).
+
+    Args:
+        phone: Phone number to resolve (e.g. 5511999999999)
+    """
+    success, message, jids = whatsapp_resolve_contact(phone)
+    return {"success": success, "message": message, "jids": jids}
+
+
+@mcp.tool()
+def react_to_message(
+    chat_jid: str,
+    message_id: str,
+    emoji: str,
+    from_me: bool = True
+) -> Dict[str, Any]:
+    """React to a WhatsApp message with an emoji.
+
+    Passing an empty emoji string removes the existing reaction.
+
+    Args:
+        chat_jid: The JID of the chat (e.g. 5511999999999@s.whatsapp.net or group@g.us)
+        message_id: The ID of the message to react to
+        emoji: The emoji to react with, or "" to remove the reaction
+        from_me: Whether the target message was sent by you (defaults True, your own
+            message). Setting from_me=False works only in direct chats; in group
+            chats it returns an error because the original sender's JID isn't available.
+    """
+    success, message = whatsapp_react_to_message(chat_jid, message_id, emoji, from_me=from_me)
+    return {"success": success, "message": message}
+
+
+@mcp.tool()
+def edit_message(
+    chat_jid: str,
+    message_id: str,
+    new_text: str,
+    from_me: bool = True
+) -> Dict[str, Any]:
+    """Edit the text of a previously sent WhatsApp message.
+
+    Args:
+        chat_jid: The JID of the chat (e.g. 5511999999999@s.whatsapp.net or group@g.us)
+        message_id: The ID of the message to edit
+        new_text: The new message text
+        from_me: Accepted for API symmetry with react_to_message/delete_message but
+            ignored — WhatsApp only allows editing your own messages, and the bridge
+            never reads this param for /api/edit.
+    """
+    success, message = whatsapp_edit_message(chat_jid, message_id, new_text, from_me=from_me)
+    return {"success": success, "message": message}
+
+
+@mcp.tool()
+def delete_message(
+    chat_jid: str,
+    message_id: str,
+    from_me: bool = True
+) -> Dict[str, Any]:
+    """Delete a WhatsApp message for everyone (revoke).
+
+    Args:
+        chat_jid: The JID of the chat (e.g. 5511999999999@s.whatsapp.net or group@g.us)
+        message_id: The ID of the message to delete
+        from_me: Whether the target message was sent by you (defaults True, your own
+            message). Setting from_me=False works only in direct chats; in group
+            chats it returns an error because the original sender's JID isn't available.
+    """
+    success, message = whatsapp_delete_message(chat_jid, message_id, from_me=from_me)
     return {"success": success, "message": message}
 
 
