@@ -15,6 +15,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -1026,6 +1027,305 @@ func handleRevoke(client *whatsmeow.Client) http.HandlerFunc {
 	}
 }
 
+// GroupParticipantsRequest represents a request to add, remove, promote or
+// demote participants in a group.
+type GroupParticipantsRequest struct {
+	GroupJID     string   `json:"group_jid"`
+	Participants []string `json:"participants"`
+	Action       string   `json:"action"`
+}
+
+// GroupParticipantResult is the per-participant outcome of a group
+// participants update.
+type GroupParticipantResult struct {
+	JID        string `json:"jid"`
+	IsAdmin    bool   `json:"is_admin"`
+	Error      int    `json:"error"`
+	AddRequest bool   `json:"add_request,omitempty"`
+}
+
+// GroupParticipantsResponse represents the response for
+// POST /api/group_participants. Success means the call was accepted by
+// WhatsApp, not that every participant change applied — inspect Participants.
+type GroupParticipantsResponse struct {
+	Success      bool                     `json:"success"`
+	Message      string                   `json:"message"`
+	Participants []GroupParticipantResult `json:"participants,omitempty"`
+}
+
+var participantChangeByAction = map[string]whatsmeow.ParticipantChange{
+	"add":     whatsmeow.ParticipantChangeAdd,
+	"remove":  whatsmeow.ParticipantChangeRemove,
+	"promote": whatsmeow.ParticipantChangePromote,
+	"demote":  whatsmeow.ParticipantChangeDemote,
+}
+
+// parseGroupParticipantJIDs turns raw participant strings (bare phone numbers
+// or full JIDs) into types.JID. Bare numbers are normalized via normalizePhone
+// and assigned DefaultUserServer; full JIDs must be DefaultUserServer or
+// HiddenUserServer (LID), since those are the only servers valid as group
+// participants. Empty items after trimming are a hard error, not skipped.
+func parseGroupParticipantJIDs(participants []string) ([]types.JID, error) {
+	jids := make([]types.JID, 0, len(participants))
+	for _, p := range participants {
+		p = strings.TrimSpace(p)
+		if p == "" {
+			return nil, fmt.Errorf("Invalid participant: empty string")
+		}
+		var jid types.JID
+		if strings.Contains(p, "@") {
+			var err error
+			jid, err = types.ParseJID(p)
+			if err != nil {
+				return nil, fmt.Errorf("Invalid participant JID %q: %v", p, err)
+			}
+			if jid.Server != types.DefaultUserServer && jid.Server != types.HiddenUserServer {
+				return nil, fmt.Errorf("Invalid participant JID %q: unsupported server %q", p, jid.Server)
+			}
+		} else {
+			jid = types.JID{User: normalizePhone(p), Server: types.DefaultUserServer}
+		}
+		jids = append(jids, jid)
+	}
+	if len(jids) == 0 {
+		return nil, fmt.Errorf("No valid participants after parsing")
+	}
+	return jids, nil
+}
+
+// handleGroupParticipants returns the handler for POST /api/group_participants.
+func handleGroupParticipants(client *whatsmeow.Client) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		var req GroupParticipantsRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.GroupJID == "" || len(req.Participants) == 0 {
+			http.Error(w, "Invalid request: group_jid and participants required", http.StatusBadRequest)
+			return
+		}
+		groupJID, err := types.ParseJID(req.GroupJID)
+		if err != nil || groupJID.Server != types.GroupServer {
+			http.Error(w, "Invalid group_jid: must be a @g.us JID", http.StatusBadRequest)
+			return
+		}
+		action, ok := participantChangeByAction[req.Action]
+		if !ok {
+			http.Error(w, "Invalid action: must be one of add, remove, promote, demote", http.StatusBadRequest)
+			return
+		}
+		participantJIDs, err := parseGroupParticipantJIDs(req.Participants)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		if client == nil || !client.IsConnected() {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusServiceUnavailable)
+			json.NewEncoder(w).Encode(GroupParticipantsResponse{Success: false, Message: "WhatsApp client not connected"})
+			return
+		}
+		results, err := client.UpdateGroupParticipants(r.Context(), groupJID, participantJIDs, action)
+		if err != nil {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusInternalServerError)
+			json.NewEncoder(w).Encode(GroupParticipantsResponse{Success: false, Message: fmt.Sprintf("UpdateGroupParticipants error: %v", err)})
+			return
+		}
+		participants := make([]GroupParticipantResult, 0, len(results))
+		for _, p := range results {
+			participants = append(participants, GroupParticipantResult{
+				JID:        p.JID.String(),
+				IsAdmin:    p.IsAdmin,
+				Error:      p.Error,
+				AddRequest: p.AddRequest != nil,
+			})
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(GroupParticipantsResponse{
+			Success:      true,
+			Message:      fmt.Sprintf("%s applied to %d participant(s)", req.Action, len(participants)),
+			Participants: participants,
+		})
+	}
+}
+
+// ChatPresenceRequest represents a request to send a typing/recording indicator.
+type ChatPresenceRequest struct {
+	ChatJID string `json:"chat_jid"`
+	State   string `json:"state"`
+	Media   string `json:"media"`
+}
+
+var chatPresenceByState = map[string]types.ChatPresence{
+	"composing": types.ChatPresenceComposing,
+	"paused":    types.ChatPresencePaused,
+}
+
+var chatPresenceMediaByValue = map[string]types.ChatPresenceMedia{
+	"":      types.ChatPresenceMediaText,
+	"audio": types.ChatPresenceMediaAudio,
+}
+
+// handleChatPresence returns the handler for POST /api/chat_presence. Ephemeral:
+// nothing is persisted, and there's no timer — the caller is responsible for
+// sending "paused" to end the indicator (WhatsApp expires "composing" on its own).
+func handleChatPresence(client *whatsmeow.Client) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		var req ChatPresenceRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.ChatJID == "" {
+			http.Error(w, "Invalid request: chat_jid required", http.StatusBadRequest)
+			return
+		}
+		chatJID, err := types.ParseJID(req.ChatJID)
+		if err != nil {
+			http.Error(w, fmt.Sprintf("Invalid chat_jid: %v", err), http.StatusBadRequest)
+			return
+		}
+		state, ok := chatPresenceByState[req.State]
+		if !ok {
+			http.Error(w, "Invalid state: must be one of composing, paused", http.StatusBadRequest)
+			return
+		}
+		media, ok := chatPresenceMediaByValue[req.Media]
+		if !ok {
+			http.Error(w, "Invalid media: must be one of \"\", audio", http.StatusBadRequest)
+			return
+		}
+		if client == nil || !client.IsConnected() {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusServiceUnavailable)
+			json.NewEncoder(w).Encode(MarkChatResponse{Success: false, Message: "WhatsApp client not connected"})
+			return
+		}
+		if err := client.SendChatPresence(r.Context(), chatJID, state, media); err != nil {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusInternalServerError)
+			json.NewEncoder(w).Encode(MarkChatResponse{Success: false, Message: fmt.Sprintf("SendChatPresence error: %v", err)})
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(MarkChatResponse{Success: true, Message: "chat presence sent"})
+	}
+}
+
+// IsOnWhatsAppRequest represents a request to check phone number registration.
+type IsOnWhatsAppRequest struct {
+	Phones []string `json:"phones"`
+}
+
+// IsOnWhatsAppResult is the per-number outcome of an is_on_whatsapp check.
+type IsOnWhatsAppResult struct {
+	Query        string `json:"query"`
+	JID          string `json:"jid"`
+	IsIn         bool   `json:"is_in"`
+	VerifiedName string `json:"verified_name,omitempty"`
+}
+
+// IsOnWhatsAppApiResponse represents the response for POST /api/is_on_whatsapp.
+type IsOnWhatsAppApiResponse struct {
+	Success bool                 `json:"success"`
+	Message string               `json:"message"`
+	Results []IsOnWhatsAppResult `json:"results,omitempty"`
+}
+
+const maxIsOnWhatsAppPhones = 50
+
+var checkPhoneRe = regexp.MustCompile(`^\d{8,15}$`)
+
+// normalizeCheckPhones validates and normalizes phone numbers for
+// /api/is_on_whatsapp: strips formatting via normalizePhone, rejects anything
+// that isn't 8-15 digits after normalization (catches internal spaces/hyphens,
+// "00" prefixes, empty items), and caps the list at maxIsOnWhatsAppPhones to
+// bound the WhatsApp lookup (also closes a mass-scan vector).
+func normalizeCheckPhones(phones []string) ([]string, error) {
+	if len(phones) > maxIsOnWhatsAppPhones {
+		return nil, fmt.Errorf("Too many phones: max %d, got %d", maxIsOnWhatsAppPhones, len(phones))
+	}
+	out := make([]string, len(phones))
+	for i, p := range phones {
+		digits := normalizePhone(strings.TrimSpace(p))
+		if !checkPhoneRe.MatchString(digits) {
+			return nil, fmt.Errorf("Invalid phone %q: must be 8-15 digits", p)
+		}
+		out[i] = "+" + digits
+	}
+	return out, nil
+}
+
+// mergeIsOnWhatsAppResults correlates the whatsmeow response (which omits
+// unregistered numbers instead of returning IsIn=false for them) with the
+// original query list, so the API always returns exactly one result per
+// input phone, in input order, with is_in:false filled in for omissions.
+func mergeIsOnWhatsAppResults(queries []string, resp []types.IsOnWhatsAppResponse) []IsOnWhatsAppResult {
+	byQuery := make(map[string]types.IsOnWhatsAppResponse, len(resp))
+	for _, res := range resp {
+		byQuery[res.Query] = res
+	}
+	out := make([]IsOnWhatsAppResult, 0, len(queries))
+	for _, q := range queries {
+		res, found := byQuery[q]
+		if !found {
+			out = append(out, IsOnWhatsAppResult{Query: q, IsIn: false})
+			continue
+		}
+		item := IsOnWhatsAppResult{Query: res.Query, IsIn: res.IsIn}
+		if res.IsIn {
+			item.JID = res.JID.String()
+		}
+		if res.VerifiedName != nil && res.VerifiedName.Details != nil {
+			item.VerifiedName = res.VerifiedName.Details.GetVerifiedName()
+		}
+		out = append(out, item)
+	}
+	return out
+}
+
+// handleIsOnWhatsApp returns the handler for POST /api/is_on_whatsapp.
+func handleIsOnWhatsApp(client *whatsmeow.Client) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		var req IsOnWhatsAppRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil || len(req.Phones) == 0 {
+			http.Error(w, "Invalid request: phones required", http.StatusBadRequest)
+			return
+		}
+		phones, err := normalizeCheckPhones(req.Phones)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		if client == nil || !client.IsConnected() {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusServiceUnavailable)
+			json.NewEncoder(w).Encode(IsOnWhatsAppApiResponse{Success: false, Message: "WhatsApp client not connected"})
+			return
+		}
+		results, err := client.IsOnWhatsApp(r.Context(), phones)
+		if err != nil {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusInternalServerError)
+			json.NewEncoder(w).Encode(IsOnWhatsAppApiResponse{Success: false, Message: fmt.Sprintf("IsOnWhatsApp error: %v", err)})
+			return
+		}
+		out := mergeIsOnWhatsAppResults(phones, results)
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(IsOnWhatsAppApiResponse{
+			Success: true,
+			Message: fmt.Sprintf("%d number(s) checked", len(out)),
+			Results: out,
+		})
+	}
+}
+
 // MarkChatResponse represents the response for mark-read / mark-unread.
 type MarkChatResponse struct {
 	Success bool   `json:"success"`
@@ -1797,6 +2097,15 @@ img{border:8px solid white;border-radius:8px;box-shadow:0 4px 20px rgba(0,0,0,.2
 	// Handler for revoking (deleting for everyone) a previously sent message.
 	http.HandleFunc("/api/revoke", handleRevoke(client))
 
+	// Handler for adding, removing, promoting or demoting group participants.
+	http.HandleFunc("/api/group_participants", handleGroupParticipants(client))
+
+	// Handler for sending a typing/recording indicator to a chat.
+	http.HandleFunc("/api/chat_presence", handleChatPresence(client))
+
+	// Handler for checking whether phone numbers are registered on WhatsApp.
+	http.HandleFunc("/api/is_on_whatsapp", handleIsOnWhatsApp(client))
+
 	// Handler for resolving a phone number to all its JIDs (regular + LID).
 	// Replaces the Python-side direct read of whatsmeow_lid_map.
 	http.HandleFunc("/api/resolve_contact", func(w http.ResponseWriter, r *http.Request) {
@@ -2518,9 +2827,10 @@ func requestMediaRetry(client *whatsmeow.Client, messageStore *MessageStore, mes
 // Stable log contract consumed by recover_audios.py. Every terminal outcome
 // emits exactly one of these tags so the recovery orchestrator can classify it
 // without guessing — keep these in sync with the regexes in recover_audios.py.
-//   MEDIA RETRY <id>: SUCCESS recovered <n> bytes -> <path>
-//   MEDIA RETRY <id>: NOTONPHONE <result>   (phone no longer has the file)
-//   MEDIA RETRY <id>: ERROR <reason>        (terminal local/decrypt failure)
+//
+//	MEDIA RETRY <id>: SUCCESS recovered <n> bytes -> <path>
+//	MEDIA RETRY <id>: NOTONPHONE <result>   (phone no longer has the file)
+//	MEDIA RETRY <id>: ERROR <reason>        (terminal local/decrypt failure)
 func handleMediaRetry(client *whatsmeow.Client, messageStore *MessageStore, evt *events.MediaRetry, logger waLog.Logger) {
 	// consume() evicts the entry so a duplicate response can't re-run the
 	// download and the key material is freed on every path below.

@@ -1061,3 +1061,91 @@ def delete_message(chat_jid: str, message_id: str, from_me: bool = True) -> Tupl
         return False, f"Request error: {str(e)}"
     except Exception as e:
         return False, f"Unexpected error: {str(e)}"
+
+
+def update_group_participants(group_jid: str, participants: List[str], action: str) -> Tuple[bool, str, List[dict]]:
+    """Update group participants (add/remove/promote/demote).
+
+    Returns (success, message, participants_list). Each participant in the list
+    has jid, is_admin, error (0 = applied, non-0 = WhatsApp error code),
+    and optionally add_request (true if invitation pending).
+    """
+    try:
+        if not group_jid or not group_jid.strip():
+            return False, "group_jid is required", []
+        if not participants:
+            return False, "participants list is required", []
+        url = f"{WHATSAPP_API_BASE_URL}/group_participants"
+        payload = {
+            "group_jid": group_jid,
+            "participants": participants,
+            "action": action,
+        }
+        response = requests.post(url, json=payload)
+        try:
+            result = response.json()
+        except json.JSONDecodeError:
+            return False, f"Error parsing response: {response.text}", []
+        return (
+            bool(result.get("success", False)),
+            result.get("message", "Unknown response"),
+            result.get("participants", []),
+        )
+    except requests.RequestException as e:
+        return False, f"Request error: {str(e)}", []
+    except Exception as e:
+        return False, f"Unexpected error: {str(e)}", []
+
+
+def send_chat_presence(chat_jid: str, state: str, media: str = "") -> Tuple[bool, str]:
+    """Send chat presence (typing/paused).
+
+    state: 'composing' (typing) or 'paused' (stopped).
+    media: '' (text, default) or 'audio' (recording).
+    """
+    try:
+        if not chat_jid or not chat_jid.strip():
+            return False, "chat_jid is required"
+        url = f"{WHATSAPP_API_BASE_URL}/chat_presence"
+        payload = {
+            "chat_jid": chat_jid,
+            "state": state,
+            "media": media,
+        }
+        response = requests.post(url, json=payload)
+        try:
+            result = response.json()
+        except json.JSONDecodeError:
+            return False, f"Error parsing response: {response.text}"
+        return bool(result.get("success", False)), result.get("message", "Unknown response")
+    except requests.RequestException as e:
+        return False, f"Request error: {str(e)}"
+    except Exception as e:
+        return False, f"Unexpected error: {str(e)}"
+
+
+def check_whatsapp(phones: List[str]) -> Tuple[bool, str, List[dict]]:
+    """Check if phone numbers are on WhatsApp.
+
+    phones: list of phone numbers (with or without +). Each number is checked
+    and result includes query (normalized), jid, is_in, and optionally verified_name.
+    """
+    try:
+        if not phones:
+            return False, "phones list is required", []
+        url = f"{WHATSAPP_API_BASE_URL}/is_on_whatsapp"
+        payload = {"phones": phones}
+        response = requests.post(url, json=payload)
+        try:
+            result = response.json()
+        except json.JSONDecodeError:
+            return False, f"Error parsing response: {response.text}", []
+        return (
+            bool(result.get("success", False)),
+            result.get("message", "Unknown response"),
+            result.get("results", []),
+        )
+    except requests.RequestException as e:
+        return False, f"Request error: {str(e)}", []
+    except Exception as e:
+        return False, f"Unexpected error: {str(e)}", []

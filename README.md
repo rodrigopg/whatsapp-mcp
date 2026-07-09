@@ -207,6 +207,9 @@ Go WhatsApp Bridge (whatsapp-bridge/)
 | `download_media` | Download media from a message, get local path |
 | `create_group` | Create a new WhatsApp group |
 | `leave_group` | Leave a group |
+| `update_group_participants` | Add/remove/promote/demote group members |
+| `send_chat_presence` | Send typing or recording indicators |
+| `check_whatsapp` | Check if phone numbers are registered on WhatsApp |
 
 ---
 

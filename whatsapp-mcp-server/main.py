@@ -22,7 +22,10 @@ from whatsapp import (
     resolve_contact as whatsapp_resolve_contact,
     react_to_message as whatsapp_react_to_message,
     edit_message as whatsapp_edit_message,
-    delete_message as whatsapp_delete_message
+    delete_message as whatsapp_delete_message,
+    update_group_participants as whatsapp_update_group_participants,
+    send_chat_presence as whatsapp_send_chat_presence,
+    check_whatsapp as whatsapp_check_whatsapp
 )
 
 # Initialize FastMCP server
@@ -435,6 +438,104 @@ def delete_message(
     """
     success, message = whatsapp_delete_message(chat_jid, message_id, from_me=from_me)
     return {"success": success, "message": message}
+
+
+@mcp.tool()
+def update_group_participants(
+    group_jid: str,
+    participants: List[str],
+    action: str
+) -> Dict[str, Any]:
+    """Update WhatsApp group participants (add/remove/promote/demote).
+
+    Args:
+        group_jid: The JID of the group (must end with @g.us)
+        participants: List of phone numbers or JIDs to modify. International format recommended
+            (e.g., 5562123456789 or 5562123456789@s.whatsapp.net)
+        action: The action to perform: "add" (invite), "remove" (remove from group),
+            "promote" (make admin), or "demote" (remove admin). Requires you to be a
+            group admin for most actions.
+
+    Returns:
+        {
+            "success": bool (call accepted by WhatsApp, not all participants applied),
+            "message": str (summary),
+            "participants": [ {"jid": str, "is_admin": bool, "error": int, "add_request"?: bool}, ... ]
+        }
+
+    Note: Each participant in the response has error code 0 if applied, non-0 if rejected
+    (e.g. 403 privacy, 409 already member). add_request field is present when action="add"
+    and the target has privacy settings blocking group invites — the invitation becomes pending.
+    """
+    success, message, participants = whatsapp_update_group_participants(
+        group_jid, participants, action
+    )
+    return {
+        "success": success,
+        "message": message,
+        "participants": participants
+    }
+
+
+@mcp.tool()
+def send_chat_presence(
+    chat_jid: str,
+    state: str,
+    media: str = ""
+) -> Dict[str, Any]:
+    """Send typing or recording indicator in a WhatsApp chat (ephemeral, no persistence).
+
+    Args:
+        chat_jid: The JID of the chat (direct or group)
+        state: "composing" (typing indicator) or "paused" (stopped typing)
+        media: "" (text, default) or "audio" (recording indicator)
+
+    Guidance:
+        - Send "composing" before replying to show the recipient you're typing.
+        - Always send "paused" after you stop (or wait ~10 seconds for WhatsApp to auto-expire).
+        - If you send "composing" for "audio", the recipient sees a recording indicator.
+        - The indicator is ephemeral and not stored in the chat history.
+    """
+    success, message = whatsapp_send_chat_presence(chat_jid, state, media)
+    return {"success": success, "message": message}
+
+
+@mcp.tool()
+def check_whatsapp(phones: List[str]) -> Dict[str, Any]:
+    """Check if phone numbers are registered on WhatsApp.
+
+    Args:
+        phones: List of phone numbers to check (international format, with or without +).
+            Digits only after normalization (8-15 digits); max 50 numbers per call.
+            Small batches recommended to avoid rate-limiting.
+
+    Returns:
+        {
+            "success": bool,
+            "message": str (summary),
+            "results": [
+                {
+                    "query": str (normalized input),
+                    "jid": str (WhatsApp JID if found, empty otherwise),
+                    "is_in": bool (true if registered on WhatsApp),
+                    "verified_name"?: str (business name if business account)
+                },
+                ...
+            ]
+        }
+
+    Guidance:
+        - Always validate new recipient numbers before calling send_message.
+        - Numbers not on WhatsApp return is_in=false (no error).
+        - Business accounts include a verified_name field (company or brand name).
+        - Use small batches and avoid mass scanning to prevent rate-limiting or account restrictions.
+    """
+    success, message, results = whatsapp_check_whatsapp(phones)
+    return {
+        "success": success,
+        "message": message,
+        "results": results
+    }
 
 
 if __name__ == "__main__":
