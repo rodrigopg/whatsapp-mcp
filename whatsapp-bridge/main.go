@@ -543,17 +543,18 @@ func sendWhatsAppMessage(client *whatsmeow.Client, messageStore *MessageStore, r
 		return false, fmt.Sprintf("Error sending message: %v", err)
 	}
 
-	// Persist text outbounds so own-sends appear in the local store.
+	// Persist outbounds (text and media) so own-sends appear in the local store.
 	// Multi-device echo via handleMessage doesn't fire on single-device accounts.
-	if messageStore != nil && mediaPath == "" && client.Store != nil && client.Store.ID != nil {
+	if messageStore != nil && client.Store != nil && client.Store.ID != nil {
 		chatJID := recipientJID.String()
 		sender := client.Store.ID.User
 		if ensureErr := messageStore.EnsureChat(chatJID, resp.Timestamp); ensureErr != nil {
 			fmt.Printf("Failed to ensure chat row: %v\n", ensureErr)
 		}
+		mediaType, filename, url, mediaKey, fileSHA256, fileEncSHA256, fileLength := extractMediaInfo(msg)
 		if storeErr := messageStore.StoreMessage(
 			resp.ID, chatJID, sender, message, resp.Timestamp, true,
-			"", "", "", nil, nil, nil, 0,
+			mediaType, filename, url, mediaKey, fileSHA256, fileEncSHA256, fileLength,
 		); storeErr != nil {
 			fmt.Printf("Failed to persist outbound: %v\n", storeErr)
 		} else {
