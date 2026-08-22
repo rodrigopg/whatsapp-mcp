@@ -114,6 +114,23 @@ func NewMessageStore() (*MessageStore, error) {
 			updated_at TIMESTAMP
 		);
 		CREATE INDEX IF NOT EXISTS idx_senders_names ON senders(full_name, push_name);
+
+		-- The primary key is (id, chat_jid): perfect for fetching one message by
+		-- id, useless for what the product actually does, which is filter by
+		-- conversation and order by time. Without this index every read of a chat
+		-- scans the whole table and sorts in a temp B-tree.
+		-- Measured on 113k messages: last 20 of a chat 28.3ms -> 0.1ms, text
+		-- search scoped to one chat 29.4ms -> 2.9ms (the unaccent() callback stops
+		-- running over every row in the database), and the last-message-per-chat
+		-- aggregation 78.8ms -> 19.2ms via a covering index.
+		CREATE INDEX IF NOT EXISTS idx_messages_chat_time ON messages(chat_jid, timestamp);
+
+		-- Partial on purpose: this is exactly the question the transcription sweep
+		-- asks every run, and indexing only the pending rows keeps it tiny
+		-- (26.8ms -> 0.2ms on the same database) instead of covering 113k rows to
+		-- answer for a few thousand.
+		CREATE INDEX IF NOT EXISTS idx_messages_audio_pending ON messages(chat_jid)
+			WHERE media_type = 'audio' AND (content IS NULL OR content = '');
 	` + pollSchema + matterSchema + favoritesSchema + summarySchema + draftsSchema + mentionsSchema)
 	if err != nil {
 		db.Close()
