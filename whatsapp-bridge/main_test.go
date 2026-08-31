@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -65,6 +66,42 @@ func TestSafeMediaPath(t *testing.T) {
 		pabs, _ := filepath.Abs(p)
 		if !strings.HasPrefix(pabs, abs) {
 			t.Fatalf("path %s escaped chat dir %s", pabs, abs)
+		}
+	})
+}
+
+// extractDirectPathFromURL must keep the query string. whatsmeow's
+// DownloadMediaWithPath concatenates "&hash=..." onto the direct path, so the
+// query is what supplies the "?" and the CDN authorization token (oh) — drop it
+// and every download 403s, which is exactly what happened to this bridge.
+func TestExtractDirectPathFromURL(t *testing.T) {
+	const url = "https://mmg.whatsapp.net/v/t62.7118-24/582729677_1690209148760939_n.enc" +
+		"?ccb=11-4&oh=01_Q5Aa5QEFyuE2cc8EmroSnUoZk72zv970&oe=6AA1BE81&_nc_sid=5e03e0&mms3=true"
+
+	got := extractDirectPathFromURL(url)
+
+	if !strings.HasPrefix(got, "/v/t62.7118-24/") {
+		t.Fatalf("direct path must start with the slashed path: got %q", got)
+	}
+	for _, param := range []string{"?ccb=11-4", "oh=01_Q5Aa5QEFyuE2cc8EmroSnUoZk72zv970", "oe=6AA1BE81"} {
+		if !strings.Contains(got, param) {
+			t.Errorf("direct path lost %q: got %q", param, got)
+		}
+	}
+
+	// The invariant that broke: the URL whatsmeow builds on top of this must be
+	// a single well-formed query, not a path with a stray '&'.
+	built := "https://media.example.net" + got + "&hash=abc&mms-type=image&__wa-mms="
+	if strings.Count(built, "?") != 1 {
+		t.Fatalf("built URL must have exactly one '?': %s", built)
+	}
+	if strings.Index(built, "&") < strings.Index(built, "?") {
+		t.Fatalf("built URL has a '&' before its '?': %s", built)
+	}
+
+	t.Run("unparseable URL is returned unchanged", func(t *testing.T) {
+		if got := extractDirectPathFromURL("not-a-media-url"); got != "not-a-media-url" {
+			t.Fatalf("expected the input back, got %q", got)
 		}
 	})
 }
@@ -724,4 +761,70 @@ func TestGetChatIncludeLastMessage(t *testing.T) {
 			t.Errorf("last_is_from_me = %v, want true", resp.Chat.LastIsFromMe)
 		}
 	})
+}
+
+// TestMessageStoreIndexes checks the schema NewMessageStore creates. An index is
+// only worth anything if the planner actually picks it - existing in
+// sqlite_master is not the same as being used, so this asserts both.
+func TestMessageStoreIndexes(t *testing.T) {
+	store := setupChatStore(t)
+
+	for _, name := range []string{
+		"idx_messages_chat_time",
+		"idx_messages_audio_pending",
+		"idx_senders_names",
+	} {
+		var found string
+		err := store.db.QueryRow(
+			"SELECT name FROM sqlite_master WHERE type='index' AND name=?", name).Scan(&found)
+		if err != nil {
+			t.Errorf("index %s not created: %v", name, err)
+		}
+	}
+
+	// The reads that matter must resolve through the index instead of scanning.
+	for _, tc := range []struct {
+		name  string
+		query string
+		args  []any
+		want  string
+	}{
+		{
+			name:  "recent messages of one chat",
+			query: "SELECT id FROM messages WHERE chat_jid=? ORDER BY timestamp DESC LIMIT 20",
+			args:  []any{"x@g.us"},
+			want:  "idx_messages_chat_time",
+		},
+		{
+			name:  "audio pending transcription",
+			query: "SELECT id FROM messages WHERE media_type='audio' AND (content IS NULL OR content='')",
+			args:  nil,
+			want:  "idx_messages_audio_pending",
+		},
+	} {
+		rows, err := store.db.Query("EXPLAIN QUERY PLAN "+tc.query, tc.args...)
+		if err != nil {
+			t.Fatalf("%s: explain: %v", tc.name, err)
+		}
+		var plan strings.Builder
+		cols, err := rows.Columns()
+		if err != nil {
+			t.Fatal(err)
+		}
+		for rows.Next() {
+			cells := make([]any, len(cols))
+			for i := range cells {
+				cells[i] = new(any)
+			}
+			if err := rows.Scan(cells...); err != nil {
+				t.Fatalf("%s: scan: %v", tc.name, err)
+			}
+			// The last column is the human-readable detail ("SEARCH ... USING INDEX ...").
+			fmt.Fprintf(&plan, "%v ", *(cells[len(cells)-1].(*any)))
+		}
+		rows.Close()
+		if !strings.Contains(plan.String(), tc.want) {
+			t.Errorf("%s: plan does not use %s\n  plan: %s", tc.name, tc.want, plan.String())
+		}
+	}
 }
