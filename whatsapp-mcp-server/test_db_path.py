@@ -40,7 +40,10 @@ class TestResolveMessagesDb(unittest.TestCase):
                         mock_exists.side_effect = exists_side_effect
 
                         result = resolve_messages_db()
-                        self.assertTrue(result.endswith("whatsapp-bridge/store/messages.db"))
+                        # os.path.join, not a literal "/" path: the separator is
+                        # "\" on Windows, so a hardcoded POSIX suffix fails there
+                        # even though the resolved path is correct.
+                        self.assertTrue(result.endswith(os.path.join("whatsapp-bridge", "store", "messages.db")))
 
     def test_home_path_exists(self):
         """Case 3: Env unset + relative missing + ~/.whatsapp-mcp/... exists → that path returned."""
@@ -61,7 +64,7 @@ class TestResolveMessagesDb(unittest.TestCase):
         with patch.dict(os.environ, {"WHATSAPP_MESSAGES_DB": ""}, clear=False):
             with patch("os.path.exists", return_value=False):
                 result = resolve_messages_db()
-                self.assertTrue(result.endswith("whatsapp-bridge/store/messages.db"))
+                self.assertTrue(result.endswith(os.path.join("whatsapp-bridge", "store", "messages.db")))
 
     def test_logs_once_to_stderr(self):
         """Test that the chosen path is logged once to stderr."""
