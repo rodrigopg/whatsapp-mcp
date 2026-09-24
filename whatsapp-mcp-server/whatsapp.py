@@ -521,7 +521,7 @@ def send_audio_message(recipient: str, media_path: str) -> Tuple[bool, str]:
     except Exception as e:
         return False, f"Unexpected error: {str(e)}"
 
-def download_media(message_id: str, chat_jid: str) -> Optional[str]:
+def download_media(message_id: str, chat_jid: str) -> Tuple[Optional[str], str]:
     """Download media from a message and return the local file path.
 
     Args:
@@ -529,7 +529,10 @@ def download_media(message_id: str, chat_jid: str) -> Optional[str]:
         chat_jid: The JID of the chat containing the message
 
     Returns:
-        The local file path if download was successful, None otherwise
+        A tuple of (file path or None, status message). The message carries the
+        reason on failure: the bridge already reports one, and collapsing every
+        failure mode into a bare None left the caller unable to tell an expired
+        media from a bad auth token from a bridge that is simply down.
     """
     try:
         url = f"{WHATSAPP_API_BASE_URL}/download"
@@ -545,29 +548,32 @@ def download_media(message_id: str, chat_jid: str) -> Optional[str]:
             if result.get("success", False):
                 path = result.get("path")
                 logger.info("Media downloaded successfully: %s", path)
-                return path
+                return path, "Media downloaded successfully"
             else:
-                logger.warning("Download failed: %s", result.get('message', 'Unknown error'))
-                return None
+                reason = result.get('message', 'Unknown error')
+                logger.warning("Download failed: %s", reason)
+                return None, reason
         elif response.status_code == 401:
-            logger.warning(
-                "Download auth error: HTTP 401 - check WHATSAPP_API_AUTH_TOKEN "
-                "matches the bridge's API_AUTH_TOKEN (%s)", response.text,
+            reason = (
+                "HTTP 401 - check WHATSAPP_API_AUTH_TOKEN matches the bridge's "
+                f"API_AUTH_TOKEN ({response.text})"
             )
-            return None
+            logger.warning("Download auth error: %s", reason)
+            return None, reason
         else:
-            logger.warning("Download error: HTTP %s - %s", response.status_code, response.text)
-            return None
+            reason = f"HTTP {response.status_code} - {response.text}"
+            logger.warning("Download error: %s", reason)
+            return None, reason
 
     except requests.RequestException as e:
         logger.warning("Download request error: %s", e)
-        return None
+        return None, f"Request error: {str(e)}"
     except json.JSONDecodeError:
         logger.warning("Error parsing download response: %s", response.text)
-        return None
+        return None, f"Error parsing response: {response.text}"
     except Exception as e:
         logger.warning("Unexpected download error: %s", e)
-        return None
+        return None, f"Unexpected error: {str(e)}"
 
 
 def create_group(

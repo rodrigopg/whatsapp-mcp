@@ -245,18 +245,20 @@ def download_media(message_id: str, chat_jid: str) -> Dict[str, Any]:
     Returns:
         A dictionary containing success status, a status message, and the file path if successful
     """
-    file_path = whatsapp_download_media(message_id, chat_jid)
-    
+    file_path, status_message = whatsapp_download_media(message_id, chat_jid)
+
     if file_path:
         return {
             "success": True,
-            "message": "Media downloaded successfully",
+            "message": status_message,
             "file_path": file_path
         }
     else:
         return {
             "success": False,
-            "message": "Failed to download media"
+            "message": f"Failed to download media: {status_message}",
+            "hint": "The desktop client usually saves received media to the local "
+                    "downloads folder - look for the file there before retrying."
         }
 
 @mcp.tool()
