@@ -1,0 +1,11 @@
+services:
+  bridge:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      API_AUTH_TOKEN: ${API_AUTH_TOKEN:?set API_AUTH_TOKEN in .env}
+    ports:
+      - "127.0.0.1:8080:8080"
+    volumes:
+      - ./data:/app/whatsapp-bridge/store

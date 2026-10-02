@@ -15,3 +15,7 @@ whatsapp-bridge/transcription.systemd.env
 .reversa/
 _reversa_sdd/
 _reversa_forward/
+
+# Docker
+.env
+data/

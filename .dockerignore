@@ -1,0 +1,7 @@
+.git
+.env
+data/
+**/store/
+**/.venv/
+*.db
+example-use.png

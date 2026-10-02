@@ -135,6 +135,18 @@ Optional flags (`bash -s -- --service --codex`):
 
 ---
 
+### Docker (bridge only)
+
+Runs the Go bridge (plus ffmpeg and the optional transcription sweep) in a container. The MCP server stays on the host, as before.
+
+```bash
+cp .env.example .env            # set API_AUTH_TOKEN (openssl rand -hex 32)
+docker compose up -d --build
+docker compose logs -f bridge   # scan the QR, or open http://127.0.0.1:8080/qr
+```
+
+Messages and sessions live in `./data` (back it up before re-pairing). The API is published on `127.0.0.1:8080` only. Point the MCP server at it with `WHATSAPP_API_BASE_URL=http://127.0.0.1:8080/api` and `WHATSAPP_API_AUTH_TOKEN=<same token>`.
+
 ### Codex CLI
 
 ```bash
