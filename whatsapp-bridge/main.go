@@ -3412,6 +3412,9 @@ func main() {
 		logger.Errorf("Failed to create WhatsApp client")
 		return
 	}
+	// A message we cannot decrypt (e.g. "old counter" after a Signal session desync) is otherwise
+	// dropped for good: ask the primary phone to resend it.
+	client.AutomaticMessageRerequestFromPhone = true
 
 	// Initialize message store
 	messageStore, err := NewMessageStore()
