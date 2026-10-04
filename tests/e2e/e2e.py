@@ -4,17 +4,15 @@ Run through tests/e2e/run.sh. Order matters (test_NN): later tests reuse ids fro
 Only accounts configured in tests/e2e/.env are touched; messages carry a per-run tag.
 """
 import asyncio
+import base64
 import glob
 import hashlib
 import json
 import os
-import struct
 import subprocess
-import sys
 import time
 import unittest
 import uuid
-import zlib
 
 import requests
 
@@ -106,13 +104,7 @@ def send(acct, to, text="", media=""):
     return post(acct, "/send", body)
 
 
-def png_bytes():
-    def chunk(t, d):
-        c = struct.pack(">I", len(d)) + t + d
-        return c + struct.pack(">I", zlib.crc32(t + d) & 0xFFFFFFFF)
-    raw = b"".join(b"\x00" + b"".join(bytes([(x * 8) % 256, (y * 8) % 256, 128]) for x in range(32)) for y in range(32))
-    return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", 32, 32, 8, 2, 0, 0, 0))
-            + chunk(b"IDAT", zlib.compress(raw)) + chunk(b"IEND", b""))
+PNG = base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==")
 
 
 def sha(path):
@@ -127,7 +119,7 @@ class E2E(unittest.TestCase):
     def setUpClass(cls):
         os.makedirs(MEDIA, exist_ok=True)
         with open(os.path.join(MEDIA, f"{TAG}.png"), "wb") as f:
-            f.write(png_bytes())
+            f.write(PNG)
         with open(os.path.join(MEDIA, f"{TAG}.pdf"), "wb") as f:
             f.write(
             b"%PDF-1.1\n1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj\n"
@@ -347,4 +339,4 @@ class E2E(unittest.TestCase):
 
 
 if __name__ == "__main__":
-    unittest.main(verbosity=2, failfast=False)
+    unittest.main(verbosity=2)

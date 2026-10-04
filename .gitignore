@@ -21,7 +21,6 @@ _reversa_forward/
 data/
 
 # e2e (live sessions, real numbers)
-tests/e2e/.env
 tests/e2e/.data/
 tests/e2e/report-*.md
 tests/e2e/.media/
