@@ -1,0 +1,17 @@
+# Two bridges (accounts A and B) for live end-to-end validation. See tests/e2e/README.md.
+x-bridge: &bridge
+  build:
+    context: ../..
+  restart: unless-stopped
+  environment:
+    API_AUTH_TOKEN: ${E2E_TOKEN:?run tests/e2e/run.sh once to generate tests/e2e/.env}
+
+services:
+  a:
+    <<: *bridge
+    ports: ["127.0.0.1:${E2E_A_PORT:-8091}:8080"]
+    volumes: ["./.data/a:/app/whatsapp-bridge/store", "./.media:/media"]
+  b:
+    <<: *bridge
+    ports: ["127.0.0.1:${E2E_B_PORT:-8092}:8080"]
+    volumes: ["./.data/b:/app/whatsapp-bridge/store", "./.media:/media"]
