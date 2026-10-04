@@ -725,3 +725,11 @@ func TestGetChatIncludeLastMessage(t *testing.T) {
 		}
 	})
 }
+
+func TestExtractDirectPathFromURLKeepsQuery(t *testing.T) {
+	url := "https://mmg.whatsapp.net/v/t62.7118-24/1_n.enc?ccb=11-4&oh=01_X&oe=6AE9E730&_nc_sid=5e03e0&mms3=true"
+	want := "/v/t62.7118-24/1_n.enc?ccb=11-4&oh=01_X&oe=6AE9E730&_nc_sid=5e03e0"
+	if got := extractDirectPathFromURL(url); got != want {
+		t.Fatalf("got %q, want %q", got, want)
+	}
+}

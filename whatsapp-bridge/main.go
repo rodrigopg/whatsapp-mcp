@@ -1733,10 +1733,11 @@ func extractDirectPathFromURL(url string) string {
 
 	pathPart := parts[1]
 
-	// Remove query parameters
-	pathPart = strings.SplitN(pathPart, "?", 2)[0]
+	// Keep the query string: ccb/oh/oe/_nc_sid carry the CDN authorization and
+	// whatsmeow appends "&hash=..." to this path. Only the URL-level mms3 flag
+	// is not part of the message's direct path.
+	pathPart = strings.TrimSuffix(pathPart, "&mms3=true")
 
-	// Create proper direct path format
 	return "/" + pathPart
 }
 
