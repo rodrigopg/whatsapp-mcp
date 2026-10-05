@@ -1,0 +1,33 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  go:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: whatsapp-bridge/go.mod
+      - name: Build, vet, test
+        working-directory: whatsapp-bridge
+        run: |
+          go build -o /tmp/wb .
+          go vet ./...
+          go test ./...
+
+  python:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - name: Unit tests
+        working-directory: whatsapp-mcp-server
+        run: uv run python -m unittest test_transcribe test_db_path

@@ -1,5 +1,7 @@
 # WhatsApp MCP Server
 
+[![CI](https://github.com/rodrigopg/whatsapp-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/rodrigopg/whatsapp-mcp/actions/workflows/ci.yml)
+
 > Independent, maintained project originally based on [lharries/whatsapp-mcp](https://github.com/lharries/whatsapp-mcp).
 
 This is a Model Context Protocol (MCP) server for WhatsApp.
@@ -322,6 +324,12 @@ Go WhatsApp Bridge (whatsapp-bridge/)
 - **Out of sync / re-pairing**: deleting `whatsapp-bridge/store/whatsapp.db` (or re-scanning the QR for any reason) forces WhatsApp to re-deliver up to a year of history. **This destroys your audio transcriptions** — the re-sync re-inserts every audio row with empty `content`, overwriting transcribed text (the writes use `INSERT OR REPLACE`). Before re-pairing, **back up `whatsapp-bridge/store/messages.db`**. Deleting only `messages.db` does *not* protect transcriptions either: the next sync still arrives empty. After re-pairing you must re-run `transcribe.py` / `recover_audios.py` to rebuild them.
 - **Device limit**: WhatsApp limits linked devices. Remove one via Settings → Linked Devices on your phone.
 - **Dev clone or custom port**: point the MCP server at your setup via the `WHATSAPP_BRIDGE_PORT` or `WHATSAPP_API_BASE_URL` env vars.
+
+---
+
+## Testing
+
+CI runs the Go build/vet/tests and the Python unit tests on every PR. Changes that touch WhatsApp behavior are also validated live against two paired accounts; see [tests/e2e/README.md](tests/e2e/README.md). Security reports: see [SECURITY.md](SECURITY.md).
 
 ---
 
