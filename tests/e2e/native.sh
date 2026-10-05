@@ -14,11 +14,20 @@ alive() { [ -f ".run/$1.pid" ] && kill -0 "$(cat ".run/$1.pid")" 2>/dev/null; }
 start() {
   alive "$1" && return
   mkdir -p ".data/$1"
-  # The subshell's own stdout/stderr must be detached too, or a caller capturing our output (run.sh) never sees EOF.
+  # exec makes the subshell BECOME the bridge, so $! is the bridge's own pid (a plain `a && b &` backgrounds
+  # the whole list and $! would be the wrapper, which stop would kill while the bridge lived on).
+  # The subshell's stdout/stderr are detached too, or a caller capturing our output never sees EOF.
   ( cd ".data/$1" && BIND_ADDR=127.0.0.1 WHATSAPP_BRIDGE_PORT="$(port "$1")" API_AUTH_TOKEN="$E2E_TOKEN" \
-      setsid "$BIN" > "$HERE/.run/$1.log" 2>&1 < /dev/null & echo $! > "$HERE/.run/$1.pid" ) > /dev/null 2>&1
+      exec "$BIN" > "$HERE/.run/$1.log" 2>&1 < /dev/null ) > /dev/null 2>&1 &
+  echo $! > ".run/$1.pid"
 }
-stop() { alive "$1" && kill "$(cat ".run/$1.pid")" || true; rm -f ".run/$1.pid"; }
+stop() {
+  alive "$1" || { rm -f ".run/$1.pid"; return; }
+  local pid; pid=$(cat ".run/$1.pid"); kill "$pid"
+  for _ in 1 2 3 4 5 6 7 8 9 10; do kill -0 "$pid" 2>/dev/null || break; sleep 0.5; done
+  kill -9 "$pid" 2>/dev/null || true
+  rm -f ".run/$1.pid"
+}
 
 case "$1" in
   build)   (cd ../../whatsapp-bridge && go build -o "$BIN" .) ;;
