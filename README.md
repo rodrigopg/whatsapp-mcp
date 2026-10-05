@@ -309,6 +309,8 @@ Go WhatsApp Bridge (whatsapp-bridge/)
 | `join_group_with_link` | Join a group by invite link or code |
 | `update_group_settings` | Set group name, description, announce-only, locked |
 | `check_whatsapp` | Check if phone numbers are registered on WhatsApp |
+| `create_poll` | Send a poll (2-12 options) to a chat |
+| `get_poll_votes` | Read the votes of a poll the bridge saw live |
 
 ---
 

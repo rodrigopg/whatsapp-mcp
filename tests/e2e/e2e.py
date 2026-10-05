@@ -40,6 +40,7 @@ MCP_TOOLS = {
     "get_contact_chats", "get_last_interaction", "get_message_context", "send_message", "send_file",
     "send_audio_message", "download_media", "create_group", "leave_group", "mark_chat_as_read",
     "mark_chat_as_unread", "get_group_info", "archive_chat", "resolve_contact", "react_to_message",
+    "create_poll", "get_poll_votes",
     "edit_message", "delete_message", "update_group_participants", "send_chat_presence", "check_whatsapp",
     "get_group_invite_link", "join_group_with_link", "update_group_settings",
 }
@@ -204,6 +205,20 @@ class E2E(unittest.TestCase):
         code, d = post("b", "/react", {"chat_jid": self.need("b_chat_a"), "message_id": self.need("b_msg")["id"],
                                        "emoji": "❤️", "from_me": False})
         self.assertEqual((code, d.get("success")), (200, True), d)
+
+    def test_06b_poll(self):
+        chat = self.need("a_chat_b")
+        question = f"{TAG} lunch?"
+        code, d = post("a", "/poll", {"chat_jid": chat, "question": question, "options": ["pizza", "sushi"]})
+        self.assertEqual((code, d.get("success")), (200, True), d)
+        self.assertTrue(eventually(lambda: find_msg("a", question, from_me=True)), "A did not store its poll")
+        self.assertTrue(eventually(lambda: find_msg("b", question, from_me=False)), "B did not receive the poll")
+        code, d = post("a", "/poll_votes", {"chat_jid": chat, "message_id": d["message_id"]})
+        self.assertEqual(code, 200, d)
+        self.assertEqual(d.get("options"), ["pizza", "sushi"], d)
+        self.assertEqual(d.get("votes"), [], d)  # vote reading is unit-tested only (no vote route)
+        code, d = post("a", "/poll", {"chat_jid": chat, "question": question, "options": ["only one"]})
+        self.assertEqual(code, 400, d)
 
     def test_07_edit(self):
         m, chat = self.need("a_msg"), self.need("a_chat_b")

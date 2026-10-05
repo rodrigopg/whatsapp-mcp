@@ -21,6 +21,8 @@ from whatsapp import (
     archive_chat as whatsapp_archive_chat,
     resolve_contact as whatsapp_resolve_contact,
     react_to_message as whatsapp_react_to_message,
+    create_poll as whatsapp_create_poll,
+    get_poll_votes as whatsapp_get_poll_votes,
     edit_message as whatsapp_edit_message,
     delete_message as whatsapp_delete_message,
     update_group_participants as whatsapp_update_group_participants,
@@ -378,6 +380,42 @@ def resolve_contact(phone: str) -> Dict[str, Any]:
     """
     success, message, jids = whatsapp_resolve_contact(phone)
     return {"success": success, "message": message, "jids": jids}
+
+
+@mcp.tool()
+def create_poll(
+    chat_jid: str,
+    question: str,
+    options: List[str],
+    selectable_count: int = 1
+) -> Dict[str, Any]:
+    """Send a WhatsApp poll to a chat.
+
+    Args:
+        chat_jid: The JID of the chat (e.g. 5511999999999@s.whatsapp.net or group@g.us)
+        question: The poll question (max 255 characters)
+        options: 2 to 12 distinct options (max 100 characters each)
+        selectable_count: How many options a voter may pick (1 to len(options), default 1)
+    """
+    success, message = whatsapp_create_poll(chat_jid, question, options, selectable_count)
+    return {"success": success, "message": message}
+
+
+@mcp.tool()
+def get_poll_votes(chat_jid: str, message_id: str) -> Dict[str, Any]:
+    """Read the recorded votes of a poll.
+
+    Only polls seen live by the bridge (sent through create_poll or received
+    while it was running) are tracked; polls from history sync are not.
+
+    Args:
+        chat_jid: The JID of the chat containing the poll
+        message_id: The ID of the poll message
+    """
+    success, message, result = whatsapp_get_poll_votes(chat_jid, message_id)
+    if not success:
+        return {"success": False, "message": message}
+    return result
 
 
 @mcp.tool()

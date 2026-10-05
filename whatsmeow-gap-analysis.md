@@ -34,7 +34,7 @@
 | 8 | **Typing/presença no chat** | `SendChatPresence` | ✅ | ✅ | **B** | Alto (bot mais natural) |
 | 9 | **Está no WhatsApp?** (valida número) | `IsOnWhatsApp` | ✅ | ✅ | **B** | Alto |
 | 10 | **Info de usuário** (status, pic, devices) | `GetUserInfo`/`GetProfilePictureInfo` | ❌ | ❌ | **B** | Médio |
-| 11 | **Enquete** (criar + ler votos) | `BuildPollCreation`/`DecryptPollVote` | ❌ | ❌ | **B** | Médio |
+| 11 | **Enquete** (criar + ler votos) | `BuildPollCreation`/`DecryptPollVote` | ✅ `/api/poll`, `/api/poll_votes` | ✅ `create_poll`, `get_poll_votes` | **B** | Médio — feito |
 | 12 | **Link de convite do grupo** (get/reset/join) | `GetGroupInviteLink`/`JoinGroupWithLink` | ✅ `/api/group_invite`, `/api/group_invite_reset`, `/api/group_join` | ✅ | **B** | Médio — done |
 | 13 | **Setters de grupo** (nome/tópico/anúncio/locked; foto fora do escopo) | `SetGroupName`/`SetGroupTopic`/`SetGroupAnnounce`/`SetGroupLocked` | ✅ `/api/group_settings` | ✅ | **B** | Médio — done (`SetGroupPhoto` pending) |
 | 14 | **Read receipt explícito** (marcar lida via app-state ✅; receipt real ❌) | `MarkRead` | parcial | parcial | **B** | Médio |

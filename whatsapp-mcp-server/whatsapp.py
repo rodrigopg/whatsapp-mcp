@@ -719,6 +719,43 @@ def resolve_contact(phone: str) -> Tuple[bool, str, List[str]]:
         return False, f"Unexpected error: {str(e)}", []
 
 
+def create_poll(chat_jid: str, question: str, options: List[str], selectable_count: int = 1) -> Tuple[bool, str]:
+    """Send a poll (2-12 options) to a chat. The bridge validates the limits."""
+    try:
+        if not chat_jid or not chat_jid.strip():
+            return False, "chat_jid is required"
+        payload = {"chat_jid": chat_jid, "question": question, "options": options,
+                   "selectable_count": selectable_count}
+        response = _api_request("POST", "/poll", json=payload)
+        try:
+            result = response.json()
+        except json.JSONDecodeError:
+            return False, f"Error parsing response: {response.text}"
+        if result.get("success"):
+            return True, f"Poll sent (message_id: {result.get('message_id', '')})"
+        return False, result.get("error") or result.get("message", "Unknown response")
+    except requests.RequestException as e:
+        return False, f"Request error: {str(e)}"
+
+
+def get_poll_votes(chat_jid: str, message_id: str) -> Tuple[bool, str, Optional[dict]]:
+    try:
+        if not chat_jid or not chat_jid.strip():
+            return False, "chat_jid is required", None
+        if not message_id or not message_id.strip():
+            return False, "message_id is required", None
+        response = _api_request("POST", "/poll_votes", json={"chat_jid": chat_jid, "message_id": message_id})
+        try:
+            result = response.json()
+        except json.JSONDecodeError:
+            return False, f"Error parsing response: {response.text}", None
+        if not result.get("success"):
+            return False, result.get("error") or result.get("message", "Unknown response"), None
+        return True, "Poll votes retrieved", result
+    except requests.RequestException as e:
+        return False, f"Request error: {str(e)}", None
+
+
 def react_to_message(chat_jid: str, message_id: str, emoji: str, from_me: bool = True) -> Tuple[bool, str]:
     """React to a message with an emoji ("" removes the reaction).
 

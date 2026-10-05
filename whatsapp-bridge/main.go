@@ -114,7 +114,7 @@ func NewMessageStore() (*MessageStore, error) {
 			updated_at TIMESTAMP
 		);
 		CREATE INDEX IF NOT EXISTS idx_senders_names ON senders(full_name, push_name);
-	`)
+	` + pollSchema)
 	if err != nil {
 		db.Close()
 		return nil, fmt.Errorf("failed to create tables: %v", err)
@@ -329,6 +329,8 @@ func extractTextContent(msg *waProto.Message) string {
 		return text
 	} else if extendedText := msg.GetExtendedTextMessage(); extendedText != nil {
 		return extendedText.GetText()
+	} else if poll := pollCreation(msg); poll != nil {
+		return pollSearchText(poll.GetName())
 	}
 
 	// Media messages can carry a text caption that should be searchable
@@ -842,6 +844,11 @@ func handleMessage(client *whatsmeow.Client, messageStore *MessageStore, msg *ev
 		logger.Warnf("Failed to store chat: %v", err)
 	}
 
+	if msg.Message.GetPollUpdateMessage() != nil {
+		recordPollVote(client, messageStore, msg, chatJID, sender, logger)
+		return
+	}
+
 	// Extract text content
 	content := extractTextContent(msg.Message)
 
@@ -871,6 +878,16 @@ func handleMessage(client *whatsmeow.Client, messageStore *MessageStore, msg *ev
 		fileEncSHA256,
 		fileLength,
 	)
+
+	if poll := pollCreation(msg.Message); poll != nil {
+		var names []string
+		for _, o := range poll.GetOptions() {
+			names = append(names, o.GetOptionName())
+		}
+		if perr := storePoll(messageStore.db, msg.Info.ID, chatJID, poll.GetName(), names, int(poll.GetSelectableOptionsCount())); perr != nil {
+			logger.Warnf("Failed to store poll: %v", perr)
+		}
+	}
 
 	if err != nil {
 		logger.Warnf("Failed to store message: %v", err)
@@ -3548,6 +3565,10 @@ img{border:8px solid white;border-radius:8px;box-shadow:0 4px 20px rgba(0,0,0,.2
 	http.HandleFunc("/api/group_invite_reset", handleGroupInvite(client, true))
 	http.HandleFunc("/api/group_join", handleGroupJoin(client))
 	http.HandleFunc("/api/group_settings", handleGroupSettings(client))
+
+	// Handlers for creating a poll and reading its recorded votes.
+	http.HandleFunc("/api/poll", handlePoll(client, messageStore))
+	http.HandleFunc("/api/poll_votes", handlePollVotes(messageStore))
 
 	// Handler for sending a typing/recording indicator to a chat.
 	http.HandleFunc("/api/chat_presence", handleChatPresence(client))
