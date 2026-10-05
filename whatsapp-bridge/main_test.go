@@ -877,3 +877,32 @@ func TestApplyEdit(t *testing.T) {
 		t.Errorf("rows created: %d", n)
 	}
 }
+
+func TestHealthz(t *testing.T) {
+	get := func(connected bool, method string) *httptest.ResponseRecorder {
+		rec := httptest.NewRecorder()
+		handleHealthz(func() bool { return connected })(rec, httptest.NewRequest(method, "/healthz", nil))
+		return rec
+	}
+	if rec := get(true, http.MethodGet); rec.Code != 200 || strings.TrimSpace(rec.Body.String()) != `{"connected":true,"status":"ok"}` {
+		t.Fatalf("connected: %d %s", rec.Code, rec.Body)
+	}
+	if rec := get(false, http.MethodGet); rec.Code != 503 || strings.TrimSpace(rec.Body.String()) != `{"connected":false,"status":"degraded"}` {
+		t.Fatalf("disconnected: %d %s", rec.Code, rec.Body)
+	}
+	if rec := get(true, http.MethodPost); rec.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("POST: %d", rec.Code)
+	}
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/healthz", handleHealthz(func() bool { return true }))
+	mux.HandleFunc("/api/chats", func(w http.ResponseWriter, r *http.Request) {})
+	h := requireBearerToken("tok", mux)
+	for path, want := range map[string]int{"/healthz": 200, "/api/chats": 401} {
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
+		if rec.Code != want {
+			t.Fatalf("%s: got %d want %d", path, rec.Code, want)
+		}
+	}
+}

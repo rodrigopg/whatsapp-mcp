@@ -19,7 +19,7 @@ It connects to your **personal WhatsApp account** directly via the WhatsApp web 
 - **PNG QR fallback** — QR code is saved to `/tmp/whatsapp-qr.png` and opened automatically on macOS if the terminal rendering is hard to scan.
 
 ### Security
-- **REST API bound to `127.0.0.1` by default** — the upstream bound to `0.0.0.0`, meaning anyone on the same LAN could send messages as you. Set `BIND_ADDR=<ip>` to opt into wider exposure (`0.0.0.0`, or a specific interface like a Tailscale address). If `BIND_ADDR` is not loopback, `API_AUTH_TOKEN` becomes mandatory — the bridge refuses to start without it, and every `/api/*` request must send `Authorization: Bearer <token>`.
+- **REST API bound to `127.0.0.1` by default** — the upstream bound to `0.0.0.0`, meaning anyone on the same LAN could send messages as you. Set `BIND_ADDR=<ip>` to opt into wider exposure (`0.0.0.0`, or a specific interface like a Tailscale address). If `BIND_ADDR` is not loopback, `API_AUTH_TOKEN` becomes mandatory — the bridge refuses to start without it, and every `/api/*` request must send `Authorization: Bearer <token>`. `GET /healthz` (connected yes/no, nothing else) and `/qr` stay open without a token.
 
 ### Contact name resolution (LID migration)
 WhatsApp has been migrating contacts from phone-based JIDs (`+55...@s.whatsapp.net`) to internal LID JIDs (`xxx@lid`) for privacy. This broke contact search, `get_direct_chat_by_contact`, and `list_messages` in the upstream. Fixed with:
@@ -182,6 +182,8 @@ docker compose logs -f bridge   # scan the QR, or open http://127.0.0.1:8080/qr
 ```
 
 Messages and sessions live in `./data` (back it up before re-pairing). The API is published on `127.0.0.1:8080` only. Point the MCP server at it with `WHATSAPP_API_BASE_URL=http://127.0.0.1:8080/api` and `WHATSAPP_API_AUTH_TOKEN=<same token>`.
+
+The image has a `HEALTHCHECK` (and compose a matching `healthcheck:`) that polls `GET /healthz`: 200 `{"status":"ok","connected":true}` when WhatsApp is connected, 503 `{"status":"degraded","connected":false}` otherwise. Check with `docker compose ps`.
 
 ### Codex CLI
 

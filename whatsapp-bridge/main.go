@@ -2910,8 +2910,32 @@ func getSenderName(db *sql.DB, senderJID string) (SenderNameResponse, error) {
 	return SenderNameResponse{Name: senderJID}, nil
 }
 
+// handleHealthz reports only whether the WhatsApp client is connected: 200 when
+// it is, 503 otherwise. It is outside /api/, so it needs no token, and it must
+// never expose anything else (JIDs, counts, version).
+func handleHealthz(connected func() bool) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet && r.Method != http.MethodHead {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		ok := connected()
+		status, code := "ok", http.StatusOK
+		if !ok {
+			status, code = "degraded", http.StatusServiceUnavailable
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(code)
+		json.NewEncoder(w).Encode(map[string]any{"status": status, "connected": ok})
+	}
+}
+
 // Start a REST API server to expose the WhatsApp client functionality
 func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, port int) {
+	http.HandleFunc("/healthz", handleHealthz(func() bool {
+		return client != nil && client.IsConnected() && client.IsLoggedIn()
+	}))
+
 	// /qr — serves the current QR code as PNG (during pairing) or a status page (when connected).
 	// Open http://localhost:8080/qr in a browser to scan the QR code on first setup.
 	http.HandleFunc("/qr", func(w http.ResponseWriter, r *http.Request) {
@@ -3590,7 +3614,7 @@ img{border:8px solid white;border-radius:8px;box-shadow:0 4px 20px rgba(0,0,0,.2
 
 	// If BIND_ADDR is not loopback, an auth token is required — the /api/* routes
 	// can send messages and read message history, so anyone who can reach the port
-	// must present a bearer token. /qr and /qr.png stay open (that's the pairing flow itself).
+	// must present a bearer token. /qr, /qr.png and /healthz stay open (pairing flow and liveness probe).
 	authToken := os.Getenv("API_AUTH_TOKEN")
 	if bindAddr != "127.0.0.1" && bindAddr != "localhost" && authToken == "" {
 		fmt.Println("FATAL: BIND_ADDR is set to a non-loopback address but API_AUTH_TOKEN is not set. Refusing to start exposed without auth.")

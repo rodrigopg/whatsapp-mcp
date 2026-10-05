@@ -16,4 +16,6 @@ COPY --from=build /whatsapp-bridge /app/whatsapp-bridge/whatsapp-bridge
 WORKDIR /app/whatsapp-bridge
 ENV BIND_ADDR=0.0.0.0
 EXPOSE 8080
+HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=3 \
+    CMD python -c "import os,urllib.request as u;u.urlopen('http://127.0.0.1:%s/healthz'%os.environ.get('WHATSAPP_BRIDGE_PORT','8080'),timeout=4)"
 CMD ["./whatsapp-bridge"]

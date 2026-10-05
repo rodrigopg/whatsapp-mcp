@@ -157,6 +157,15 @@ class E2E(unittest.TestCase):
                 f"http://127.0.0.1:{PORT[acct]}/qr", timeout=10).text, timeout=90)
             self.assertTrue(ok, f"account {acct} not connected (scan its QR at /qr)")
 
+    def test_01b_healthz(self):
+        # After test_01: /healthz only turns 200 once the socket is up, so poll instead of asserting at startup.
+        for acct in "ab":
+            url = f"http://127.0.0.1:{PORT[acct]}/healthz"
+            self.assertTrue(eventually(lambda: requests.get(url, timeout=10).status_code == 200, timeout=60),
+                            f"account {acct}: /healthz never returned 200")
+            self.assertEqual(requests.get(url, timeout=10).json(), {"status": "ok", "connected": True})
+            self.assertEqual(requests.get(f"http://127.0.0.1:{PORT[acct]}/api/chats", timeout=10).status_code, 401)
+
     # ---- 02 contact lookups --------------------------------------------------
     def test_02_is_on_whatsapp(self):
         code, d = post("a", "/is_on_whatsapp", {"phones": [PHONE["b"], "559999999999"]})
