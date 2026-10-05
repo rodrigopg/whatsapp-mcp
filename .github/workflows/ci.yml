@@ -30,4 +30,4 @@ jobs:
       - uses: astral-sh/setup-uv@v5
       - name: Unit tests
         working-directory: whatsapp-mcp-server
-        run: uv run python -m unittest test_transcribe test_db_path
+        run: uv run python -m unittest discover -p 'test_*.py'
