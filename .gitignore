@@ -24,3 +24,4 @@ data/
 tests/e2e/.data/
 tests/e2e/report-*.md
 tests/e2e/.media/
+tests/e2e/.run/

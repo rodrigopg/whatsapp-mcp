@@ -9,6 +9,7 @@ ROOT="$(cd ../.. && pwd)"
 REPORT="report-$(date +%Y%m%d-%H%M).md"
 COMPOSE=(docker compose --env-file .env -f docker-compose.e2e.yml)
 FAILED=0
+MODE=${E2E_MODE:-$(sed -n 's/^E2E_MODE=//p' .env 2>/dev/null | tail -1)}; MODE=${MODE:-docker}
 
 [ -f .env ] || { printf 'E2E_TOKEN=%s\nE2E_A_PORT=8091\nE2E_B_PORT=8092\nE2E_A_PHONE=\nE2E_B_PHONE=\n' "$(openssl rand -hex 32)" > .env; echo "created .env: fill E2E_A_PHONE / E2E_B_PHONE and re-run"; exit 2; }
 
@@ -20,19 +21,30 @@ echo "# E2E report $(date '+%Y-%m-%d %H:%M %Z')"
 echo "branch: $(git -C "$ROOT" branch --show-current) @ $(git -C "$ROOT" rev-parse --short HEAD)"
 
 step "Tier 0: offline"
-run "go build + vet + test" docker run --rm -v "$ROOT/whatsapp-bridge":/src -w /src golang:1.25-bookworm \
-    sh -c 'go build -o /tmp/wb . && go vet ./... && go test ./...'
+if [ "$MODE" = native ]; then
+  run "go build + vet + test" sh -c "cd '$ROOT/whatsapp-bridge' && go build -o /tmp/wb . && go vet ./... && go test ./..."
+else
+  run "go build + vet + test" docker run --rm -v "$ROOT/whatsapp-bridge":/src -w /src golang:1.25-bookworm \
+      sh -c 'go build -o /tmp/wb . && go vet ./... && go test ./...'
+fi
 run "python unit tests" sh -c "cd '$ROOT/whatsapp-mcp-server' && uv run python -m unittest test_transcribe test_db_path"
-run "compose refuses to start without token" sh -c "! E2E_TOKEN= ${COMPOSE[*]} config"
-run "image builds" "${COMPOSE[@]}" build
+if [ "$MODE" != native ]; then
+  run "compose refuses to start without token" sh -c "! E2E_TOKEN= ${COMPOSE[*]} config"
+  run "image builds" "${COMPOSE[@]}" build
+fi
 
 if [ "${1:-}" != "offline" ]; then
   step "Tier 1: live (A <-> B)"
-  run "bridges up" "${COMPOSE[@]}" up -d
+  if [ "$MODE" = native ]; then
+    ./native.sh stop; run "bridge build" ./native.sh build; run "bridges up" ./native.sh start
+  else
+    run "bridges up" "${COMPOSE[@]}" up -d
+  fi
   echo '```'
   uv run --project "$ROOT/whatsapp-mcp-server" python e2e.py 2>&1 | tail -80
   RC=${PIPESTATUS[0]}
   echo '```'
+  [ "$MODE" = native ] && ./native.sh stop
   [ "$RC" -eq 0 ] || FAILED=1
 fi
 
