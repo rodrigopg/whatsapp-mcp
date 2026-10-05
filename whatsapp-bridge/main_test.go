@@ -12,7 +12,10 @@ import (
 	"testing"
 	"time"
 
+	waCommon "go.mau.fi/whatsmeow/proto/waCommon"
+	waProto "go.mau.fi/whatsmeow/proto/waE2E"
 	"go.mau.fi/whatsmeow/types"
+	"google.golang.org/protobuf/proto"
 )
 
 // safeMediaPath is the load-bearing guard for two invariants: it must reject
@@ -786,5 +789,91 @@ func TestParseGroupJID(t *testing.T) {
 		if _, err := parseGroupJID(in); err == nil {
 			t.Errorf("parseGroupJID(%q) accepted", in)
 		}
+	}
+}
+
+func protoMsg(t waProto.ProtocolMessage_Type, id string, edited *waProto.Message) *waProto.Message {
+	return &waProto.Message{ProtocolMessage: &waProto.ProtocolMessage{
+		Type: t.Enum(), Key: &waCommon.MessageKey{ID: proto.String(id)}, EditedMessage: edited}}
+}
+
+func TestProtocolAction(t *testing.T) {
+	edited := &waProto.Message{Conversation: proto.String("new text")}
+	cases := []struct {
+		name    string
+		msg     *waProto.Message
+		id, txt string
+		ok      bool
+	}{
+		{"edit", protoMsg(waProto.ProtocolMessage_MESSAGE_EDIT, "m1", edited), "m1", "new text", true},
+		{"edit empty", protoMsg(waProto.ProtocolMessage_MESSAGE_EDIT, "m1", &waProto.Message{}), "", "", false},
+		{"revoke", protoMsg(waProto.ProtocolMessage_REVOKE, "m1", nil), "m1", revokedContent, true},
+		{"no id", protoMsg(waProto.ProtocolMessage_REVOKE, "", nil), "", "", false},
+		{"other type", protoMsg(waProto.ProtocolMessage_EPHEMERAL_SETTING, "m1", nil), "", "", false},
+		{"plain", &waProto.Message{Conversation: proto.String("hi")}, "", "", false},
+		{"nil", nil, "", "", false},
+	}
+	for _, c := range cases {
+		id, txt, ok := protocolAction(c.msg)
+		if id != c.id || txt != c.txt || ok != c.ok {
+			t.Errorf("%s: got (%q, %q, %v)", c.name, id, txt, ok)
+		}
+	}
+}
+
+func TestApplyEdit(t *testing.T) {
+	store := setupChatStore(t)
+	ts := time.Date(2026, 8, 23, 10, 0, 0, 0, time.UTC)
+	chat := "123@s.whatsapp.net"
+	if err := store.StoreChat(chat, "Alice", ts); err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range []struct{ id, content, media string }{{"t", "old", ""}, {"a", "transcript", "audio"}} {
+		if err := store.StoreMessage(r.id, chat, "x", r.content, ts, false, r.media, "", "", nil, nil, nil, 0); err != nil {
+			t.Fatal(err)
+		}
+	}
+	get := func(id, c string) string {
+		var s string
+		if err := store.db.QueryRow("SELECT content FROM messages WHERE id=? AND chat_jid=?", id, c).Scan(&s); err != nil {
+			t.Fatal(err)
+		}
+		return s
+	}
+	must := func(id, c, content string) {
+		if err := store.ApplyEdit(id, c, content, false, "x"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	must("t", chat, "new")
+	if got := get("t", chat); got != "new" {
+		t.Errorf("edit: %q", got)
+	}
+	must("t", "other@s.whatsapp.net", "leak")
+	if got := get("t", chat); got != "new" {
+		t.Errorf("other chat touched: %q", got)
+	}
+	must("a", chat, "edited")
+	if got := get("a", chat); got != "transcript" {
+		t.Errorf("edit clobbered transcription: %q", got)
+	}
+	must("a", chat, revokedContent)
+	if got := get("a", chat); got != revokedContent {
+		t.Errorf("revoke: %q", got)
+	}
+	if err := store.ApplyEdit("t", chat, "forged", false, "someone-else"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.ApplyEdit("t", chat, "forged", true, "x"); err != nil {
+		t.Fatal(err)
+	}
+	if got := get("t", chat); got != "new" {
+		t.Errorf("non-author edit applied: %q", got)
+	}
+	must("missing", chat, "x")
+	var n int
+	_ = store.db.QueryRow("SELECT COUNT(*) FROM messages").Scan(&n)
+	if n != 2 {
+		t.Errorf("rows created: %d", n)
 	}
 }

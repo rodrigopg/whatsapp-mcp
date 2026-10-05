@@ -767,8 +767,54 @@ func migrateLIDChats(client *whatsmeow.Client, store *MessageStore, logger waLog
 	logger.Infof("LID migration: %d merged, %d skipped (no mapping yet)", merged, skipped)
 }
 
+const revokedContent = "[message deleted by the sender]"
+
+// protocolAction decides what an incoming ProtocolMessage means for the
+// stored copy: the target message id and the new content. ok is false for
+// anything that is not an applicable edit/revoke (including an edit with no
+// text, which must never blank a row).
+func protocolAction(m *waProto.Message) (targetID, newContent string, ok bool) {
+	pm := m.GetProtocolMessage()
+	id := pm.GetKey().GetID()
+	if pm == nil || id == "" {
+		return "", "", false
+	}
+	switch pm.GetType() {
+	case waProto.ProtocolMessage_REVOKE:
+		return id, revokedContent, true
+	case waProto.ProtocolMessage_MESSAGE_EDIT:
+		if text := extractTextContent(pm.GetEditedMessage()); text != "" {
+			return id, text, true
+		}
+	}
+	return "", "", false
+}
+
+// ApplyEdit rewrites the content of an existing row. Audio rows keep their
+// transcription on edit (edits carry no transcript); a revoke overrides it.
+// Only the original author may change a row: the stored is_from_me must match
+// the event's, and for others' messages the stored sender must be the event's
+// sender (otherwise any group member could rewrite anyone's message).
+func (store *MessageStore) ApplyEdit(id, chatJID, content string, fromMe bool, sender string) error {
+	_, err := store.db.Exec(
+		`UPDATE messages SET content = ? WHERE id = ? AND chat_jid = ?
+		 AND is_from_me = ? AND (is_from_me = 1 OR sender = ?)
+		 AND (? = ? OR COALESCE(media_type, '') != 'audio')`,
+		content, id, chatJID, fromMe, sender, content, revokedContent)
+	return err
+}
+
 // Handle regular incoming messages with media support
 func handleMessage(client *whatsmeow.Client, messageStore *MessageStore, msg *events.Message, logger waLog.Logger) {
+	if msg.Message.GetProtocolMessage() != nil {
+		if id, content, ok := protocolAction(msg.Message); ok {
+			chat := resolveToPN(client, msg.Info.Chat).String()
+			if err := messageStore.ApplyEdit(id, chat, content, msg.Info.IsFromMe, resolveToPN(client, msg.Info.Sender).User); err != nil {
+				logger.Warnf("Failed to apply edit/revoke: %v", err)
+			}
+		}
+		return
+	}
 	// Normalize LID -> PN so the same contact doesn't split across two chat_jid values.
 	chatJID := resolveToPN(client, msg.Info.Chat).String()
 	sender := resolveToPN(client, msg.Info.Sender).User

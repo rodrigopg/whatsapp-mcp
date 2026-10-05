@@ -279,6 +279,8 @@ Go WhatsApp Bridge (whatsapp-bridge/)
 - `messages.db` — chats, messages, senders (local SQLite, written by the bridge)
 - `whatsapp.db` — whatsmeow session + contact store (written by whatsmeow)
 
+**Edits and deletions:** incoming message edits update the stored text in place (an edit never blanks a message nor overwrites an audio transcription), and incoming "delete for everyone" keeps the row but replaces its content with `[message deleted by the sender]`.
+
 ---
 
 ## MCP Tools

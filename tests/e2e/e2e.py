@@ -196,9 +196,6 @@ class E2E(unittest.TestCase):
                                        "emoji": "❤️", "from_me": False})
         self.assertEqual((code, d.get("success")), (200, True), d)
 
-    # KNOWN GAP: the bridge does not apply incoming edits (ProtocolMessage MESSAGE_EDIT) to the stored
-    # message, so the receiver keeps the original text. Drop this decorator when that is implemented.
-    @unittest.expectedFailure
     def test_07_edit(self):
         m, chat = self.need("a_msg"), self.need("a_chat_b")
         new = f"{TAG} edited"
@@ -344,6 +341,13 @@ class E2E(unittest.TestCase):
         self.assertTrue(m)
         code, d = post("a", "/revoke", {"chat_jid": m["chat_jid"], "message_id": m["id"], "from_me": True})
         self.assertEqual((code, d.get("success")), (200, True), d)
+        sentinel = "[message deleted by the sender]"
+
+        def b_copy_revoked():
+            c, r = post("b", "/messages", {"chat_jid": self.need("b_chat_a"), "limit": 50})
+            return c == 200 and any(x["id"] == m["id"] and x["content"] == sentinel for x in r.get("messages", []))
+
+        self.assertTrue(eventually(b_copy_revoked), "B's copy never became the revoke sentinel")
 
     # ---- 15 restart persistence ---------------------------------------------------
     def test_15_restart_keeps_session(self):
