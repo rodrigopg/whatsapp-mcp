@@ -5,7 +5,7 @@ Transforma voice messages em `content` pesquisável. **Opt-in** — desligado at
 ## Engines (`transcribe.py`)
 
 - `TRANSCRIPTION_ENGINE=local|api`.
-- **local**: `WHISPER_CLI` + `WHISPER_MODEL` (whisper.cpp). Privado, sem custo. Default `WHISPER_CLI=/Users/rodrigo/git/whisper.cpp/build/bin/whisper-cli`, default model `ggml-medium.bin`.
+- **local**: `WHISPER_CLI` + `WHISPER_MODEL` (whisper.cpp). Privado, sem custo. Sem defaults: ambos vazios → `engine_ready()` = not configured (sweep no-op); setar os dois no env.
 - **api**: OpenAI-compatible. `TRANSCRIPTION_API_KEY`, `TRANSCRIPTION_API_BASE` (default OpenAI; Groq = `https://api.groq.com/openai/v1`), `TRANSCRIPTION_API_MODEL` (`whisper-1` OpenAI; `whisper-large-v3` Groq — `whisper-1` na Groq dá 404). Áudio sai da máquina.
 - `TRANSCRIPTION_PROMPT` enviesa ambos pra termos de domínio.
 - `engine_ready()` retorna `(ok, reason)`; main() não faz NADA (content='') se não configurado.

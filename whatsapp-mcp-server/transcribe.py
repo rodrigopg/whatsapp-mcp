@@ -57,8 +57,8 @@ def _bridge_auth_headers():
 TRANSCRIPTION_ENGINE = os.environ.get("TRANSCRIPTION_ENGINE", "local").lower()
 
 # Local backend (whisper.cpp)
-WHISPER_CLI = os.environ.get("WHISPER_CLI", "/Users/rodrigo/git/whisper.cpp/build/bin/whisper-cli")
-WHISPER_MODEL = os.environ.get("WHISPER_MODEL", "/Users/rodrigo/PyCharmMiscProject/models/ggml-medium.bin")
+WHISPER_CLI = os.environ.get("WHISPER_CLI", "")
+WHISPER_MODEL = os.environ.get("WHISPER_MODEL", "")
 DECODING_OPTS = ["--temperature", "0", "--no-fallback", "--max-context", "0", "--split-on-word"]
 
 # API backend (OpenAI Whisper, or any OpenAI-compatible endpoint such as Groq).
@@ -70,12 +70,11 @@ TRANSCRIPTION_API_BASE = os.environ.get("TRANSCRIPTION_API_BASE", "https://api.o
 TRANSCRIPTION_API_MODEL = os.environ.get("TRANSCRIPTION_API_MODEL", "whisper-1")
 API_MAX_BYTES = 25 * 1024 * 1024  # OpenAI endpoint hard limit
 
-# Shared prompt — biases both engines toward correct PT-BR punctuation + TOTVS terms.
+# Shared prompt — biases both engines toward correct punctuation. Override with TRANSCRIPTION_PROMPT (e.g. domain terms).
 WHISPER_PROMPT = os.environ.get(
     "TRANSCRIPTION_PROMPT",
     "A seguir, a transcrição de um áudio. A transcrição deve ser precisa, com "
-    "pontuação e capitalização corretas. Nomes próprios como PROTHEUS, PIMS, "
-    "ADVPL, TOTVS devem ser mantidos em maiúsculas.",
+    "pontuação e capitalização corretas.",
 )
 
 
@@ -84,10 +83,10 @@ def engine_ready():
     must do NOTHING (leave content='') rather than mark audios, so enabling
     transcription later still picks them up."""
     if TRANSCRIPTION_ENGINE == "local":
-        if not os.path.exists(WHISPER_CLI):
-            return False, f"local engine: whisper-cli not found at {WHISPER_CLI}"
-        if not os.path.exists(WHISPER_MODEL):
-            return False, f"local engine: model not found at {WHISPER_MODEL}"
+        if not WHISPER_CLI or not os.path.exists(WHISPER_CLI):
+            return False, f"local engine: whisper-cli not found (set WHISPER_CLI; got {WHISPER_CLI!r})"
+        if not WHISPER_MODEL or not os.path.exists(WHISPER_MODEL):
+            return False, f"local engine: model not found (set WHISPER_MODEL; got {WHISPER_MODEL!r})"
         if not shutil.which("ffmpeg"):
             return False, "local engine: ffmpeg not found"
         return True, "local"

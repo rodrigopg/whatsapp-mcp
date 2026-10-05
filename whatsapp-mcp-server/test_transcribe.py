@@ -3,8 +3,10 @@ _is_expired (false-positive => permanent data loss) and _strip_accents (search
 misses). Run: python3 -m unittest test_transcribe -v"""
 
 import unittest
+import unittest.mock
 from datetime import datetime, timedelta, timezone
 
+import transcribe
 from transcribe import _is_expired, _retry_after_seconds, CDN_EXPIRY
 from whatsapp import _strip_accents
 
@@ -73,6 +75,16 @@ class StripAccentsTest(unittest.TestCase):
     def test_unaccented_query_matches_accented_text(self):
         # The whole point: a no-accent query normalizes to the same string.
         self.assertEqual(_strip_accents("conciliacao"), _strip_accents("conciliação"))
+
+
+class EngineReadyTest(unittest.TestCase):
+    def test_local_unconfigured_is_not_ready(self):
+        with unittest.mock.patch.multiple(
+            transcribe, TRANSCRIPTION_ENGINE="local", WHISPER_CLI="", WHISPER_MODEL=""
+        ):
+            ok, reason = transcribe.engine_ready()
+        self.assertFalse(ok)
+        self.assertIn("WHISPER_CLI", reason)
 
 
 if __name__ == "__main__":

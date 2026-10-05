@@ -276,7 +276,7 @@ Go WhatsApp Bridge (whatsapp-bridge/)
 - **LID contacts not found**: happens when WhatsApp hasn't yet synced the LID→PN mapping locally. Reconnect to trigger a fresh sync.
 - **Out of sync / re-pairing**: deleting `whatsapp-bridge/store/whatsapp.db` (or re-scanning the QR for any reason) forces WhatsApp to re-deliver up to a year of history. **This destroys your audio transcriptions** — the re-sync re-inserts every audio row with empty `content`, overwriting transcribed text (the writes use `INSERT OR REPLACE`). Before re-pairing, **back up `whatsapp-bridge/store/messages.db`**. Deleting only `messages.db` does *not* protect transcriptions either: the next sync still arrives empty. After re-pairing you must re-run `transcribe.py` / `recover_audios.py` to rebuild them.
 - **Device limit**: WhatsApp limits linked devices. Remove one via Settings → Linked Devices on your phone.
-- **Dev clone or custom port**: point the MCP server at your setup via the `WHATSAPP_MESSAGES_DB`, `WHATSAPP_BRIDGE_PORT`, or `WHATSAPP_API_BASE_URL` env vars.
+- **Dev clone or custom port**: point the MCP server at your setup via the `WHATSAPP_BRIDGE_PORT` or `WHATSAPP_API_BASE_URL` env vars.
 
 ---
 

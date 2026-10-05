@@ -27,7 +27,7 @@ else
   run "go build + vet + test" docker run --rm -v "$ROOT/whatsapp-bridge":/src -w /src golang:1.25-bookworm \
       sh -c 'go build -o /tmp/wb . && go vet ./... && go test ./...'
 fi
-run "python unit tests" sh -c "cd '$ROOT/whatsapp-mcp-server' && uv run python -m unittest test_transcribe test_db_path"
+run "python unit tests" sh -c "cd '$ROOT/whatsapp-mcp-server' && uv run python -m unittest discover -p 'test_*.py'"
 if [ "$MODE" != native ]; then
   run "compose refuses to start without token" sh -c "! E2E_TOKEN= ${COMPOSE[*]} config"
   run "image builds" "${COMPOSE[@]}" build
