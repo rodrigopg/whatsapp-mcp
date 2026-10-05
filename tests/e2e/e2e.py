@@ -134,10 +134,9 @@ class E2E(unittest.TestCase):
             f.write(
             b"%PDF-1.1\n1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj\n"
             b"3 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 200 200]>>endobj\ntrailer<</Root 1 0 R/Size 4>>\n%%EOF\n")
-        ffmpeg = ["ffmpeg", "-y", "-loglevel", "error", "-f", "lavfi", "-i", "sine=frequency=440:duration=2",
-                  "-c:a", "libopus", os.path.join(MEDIA, f"{TAG}.ogg")]
-        subprocess.run(ffmpeg if MODE == "native" else COMPOSE + ["exec", "-T", "a"] + ffmpeg[:-1] + [f"/media/{TAG}.ogg"],
-                       check=True)
+        cmd = ["ffmpeg", "-y", "-loglevel", "error", "-f", "lavfi", "-i", "sine=frequency=440:duration=2",
+               "-c:a", "libopus", media_path(f"{TAG}.ogg")]
+        subprocess.run(cmd if MODE == "native" else COMPOSE + ["exec", "-T", "a"] + cmd, check=True)
 
     def need(self, key):
         v = self.state.get(key)
