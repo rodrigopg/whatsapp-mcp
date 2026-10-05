@@ -807,6 +807,8 @@ func handleMessage(client *whatsmeow.Client, messageStore *MessageStore, msg *ev
 		return
 	}
 
+	emitWebhook(msg, chatJID, sender, content, mediaType) // opt-in, non-blocking (webhook.go)
+
 	// Store message in database
 	err = messageStore.StoreMessage(
 		msg.Info.ID,

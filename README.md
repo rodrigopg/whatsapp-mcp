@@ -89,6 +89,42 @@ The backfill/recovery scripts are separate processes that read the engine vars f
 - `BIND_ADDR` env var — change the bind address of the REST API (see [Security](#security) above for the auth requirement this triggers)
 - `API_AUTH_TOKEN` env var (bridge) — bearer token required on all `/api/*` requests once `BIND_ADDR` is non-loopback
 - Transcription env vars — see [Audio transcription](#audio-transcription-opt-in) above
+- `WEBHOOK_URL` / `WEBHOOK_SECRET` env vars — opt-in outbound webhooks, see [Webhooks](#webhooks-opt-in) below
+
+### Webhooks (opt-in)
+
+Off by default. Set `WEBHOOK_URL` (http/https) and `WEBHOOK_SECRET` on the bridge to get a
+`POST` for every **live** message (not history sync), so tools like n8n can react without polling.
+If `WEBHOOK_URL` is set without `WEBHOOK_SECRET`, webhooks stay disabled and the bridge logs why.
+
+Events: `message.received` and `message.sent`. Body:
+
+```json
+{"event":"message.received","timestamp":"2026-01-01T12:00:00Z","chat_jid":"5511999999999@s.whatsapp.net",
+ "message_id":"3EB0...","sender":"5511999999999","is_from_me":false,"content":"hello","media_type":""}
+```
+
+Headers: `X-Signature: sha256=<hex HMAC-SHA256 of the raw body, keyed with WEBHOOK_SECRET>`,
+`X-Event`, `X-Delivery-Id`. Delivery is async (bounded queue of 100, dropped and logged when
+full), 5s timeout per attempt, up to 3 attempts (any non-2xx is retried), so a receiver may
+see duplicates: dedupe on `X-Delivery-Id` or `message_id`. Secret and content are never logged.
+
+Verify the signature on the raw bytes before parsing (Python/Flask; in n8n use a Webhook node
+with "Raw Body" on, then a Code node doing the same HMAC compare):
+
+```python
+import hmac, hashlib, os
+from flask import Flask, request, abort
+app = Flask(__name__)
+
+@app.post("/wa")
+def wa():
+    mac = hmac.new(os.environ["WEBHOOK_SECRET"].encode(), request.get_data(), hashlib.sha256)
+    if not hmac.compare_digest("sha256=" + mac.hexdigest(), request.headers.get("X-Signature", "")):
+        abort(401)
+    print(request.get_json()["content"])
+    return "", 204
+```
 
 **Running the MCP server against a remote bridge** (e.g. the bridge lives on a VPS/home
 server, Claude Code runs on your laptop): the MCP server talks to the bridge over HTTP only —
