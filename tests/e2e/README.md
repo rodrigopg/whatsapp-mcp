@@ -12,7 +12,7 @@ Tier 0 also runs in GitHub Actions (`.github/workflows/ci.yml`, minus the docker
 ## Modes
 
 - **docker** (default): bridges run from `docker-compose.e2e.yml`; Go tests run in a `golang` container.
-- **native** (`E2E_MODE=native`, env var or `.env` key): bridges run as plain processes via `native.sh`, Go tests run on the host. Use it where Docker is unavailable. Available once the native-mode change is merged.
+- **native** (`E2E_MODE=native`, env var or `.env` key): bridges run as plain processes via `native.sh`, Go tests run on the host. Use it where Docker is unavailable (this is how the PR monitor runs the gate).
 
 ## Setup
 
