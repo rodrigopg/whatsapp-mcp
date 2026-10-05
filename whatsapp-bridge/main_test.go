@@ -18,6 +18,9 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
+// New tests belong in a new <feature>_test.go file, not appended here: parallel
+// PRs that all append to the end of this file conflict on every merge.
+
 // safeMediaPath is the load-bearing guard for two invariants: it must reject
 // path-traversal attempts, and it must give distinct messages distinct paths
 // even when their stored filename collides (the bug that made the download

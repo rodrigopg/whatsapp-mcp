@@ -33,6 +33,15 @@ Tarefa multi-área: leia os arquivos relevantes em paralelo.
 - [ ] README/install.sh coerentes se mudou onboarding (versão Go, env vars, troubleshooting).
 - [ ] PR contra `rodrigopg/main`.
 
+## Higiene de PRs paralelos
+
+- Teste Go novo vai num `<feature>_test.go` novo, nunca no fim do `main_test.go`.
+- Teste Python novo vai num `test_<feature>.py` novo (descoberto automaticamente; nunca listar módulos por nome).
+- Teste e2e novo = método novo na sua seção numerada; tool MCP nova = uma linha por nome em `MCP_TOOLS` (ordem alfabética, vírgula no fim).
+- Linhas da tabela de tools do README e do `whatsmeow-gap-analysis.md` são linhas únicas.
+- PR sempre contra `main`; PR com base em outra branch é fechado pelo GitHub quando essa branch é apagada.
+- Depois de squash merge, outros PRs podem conflitar: rebase via cherry-pick do seu commit em cima de `origin/main`, mantendo os dois lados quando ambos só adicionam.
+
 ## Comandos essenciais
 
 ```bash
