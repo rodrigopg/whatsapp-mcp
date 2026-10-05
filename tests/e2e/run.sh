@@ -50,7 +50,9 @@ fi
 
 step "Result"
 echo "$([ $FAILED -eq 0 ] && echo PASS || echo FAIL)"
+[ $FAILED -eq 0 ]   # the block runs in a pipe subshell: its exit status is the only way FAILED reaches the caller
 } | tee "$REPORT"
+RESULT_RC=${PIPESTATUS[0]}
 
 echo; echo "report: tests/e2e/$REPORT"
-exit $FAILED
+exit $RESULT_RC
