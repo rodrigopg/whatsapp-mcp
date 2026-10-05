@@ -41,6 +41,7 @@ MCP_TOOLS = {
     "send_audio_message", "download_media", "create_group", "leave_group", "mark_chat_as_read",
     "mark_chat_as_unread", "get_group_info", "archive_chat", "resolve_contact", "react_to_message",
     "edit_message", "delete_message", "update_group_participants", "send_chat_presence", "check_whatsapp",
+    "get_group_invite_link", "join_group_with_link", "update_group_settings",
 }
 
 
@@ -299,6 +300,32 @@ class E2E(unittest.TestCase):
         code, d = send("a", gjid, text)
         self.assertEqual((code, d.get("success")), (200, True), d)
         self.assertTrue(eventually(lambda: find_msg("b", text, from_me=False)), "B did not get the group message")
+        # settings round trip, read back through group_info
+        time.sleep(SEND_GAP)
+        new_name, topic = f"{TAG} renamed", f"{TAG} topic"
+        code, d = post("a", "/group_settings", {"group_jid": gjid, "name": new_name, "topic": topic,
+                                                "announce": True, "locked": True})
+        self.assertEqual((code, d.get("success")), (200, True), d)
+
+        def settings_applied():
+            c, i = get("a", "/group_info", jid=gjid)
+            return c == 200 and (i.get("name"), i.get("topic"), i.get("announce"), i.get("locked")) == (new_name, topic, True, True)
+        self.assertTrue(eventually(settings_applied, timeout=30), "group settings not read back")
+        code, d = post("a", "/group_settings", {"group_jid": gjid, "announce": False, "locked": False})
+        self.assertEqual((code, d.get("success")), (200, True), d)
+        self.assertEqual(post("a", "/group_settings", {"group_jid": gjid})[0], 400)
+        # invite link: shape, stable on re-get, different after reset
+        code, d = get("a", "/group_invite", group_jid=gjid)
+        self.assertEqual((code, d.get("success")), (200, True), d)
+        link = d["link"]
+        self.assertRegex(link, r"^https://chat\.whatsapp\.com/[A-Za-z0-9_-]{10,}$")
+        time.sleep(SEND_GAP)
+        code, d = post("a", "/group_invite_reset", {"group_jid": gjid})
+        self.assertEqual((code, d.get("success")), (200, True), d)
+        self.assertRegex(d["link"], r"^https://chat\.whatsapp\.com/[A-Za-z0-9_-]{10,}$")
+        self.assertNotEqual(d["link"], link, "reset did not rotate the invite link")
+        # B is already a member (joined at creation), so no live join: only validate the input path
+        self.assertEqual(post("b", "/group_join", {"link": "not a link"})[0], 400)
         for action in ("promote", "demote", "remove", "add"):
             time.sleep(SEND_GAP)
             code, d = post("a", "/group_participants", {"group_jid": gjid, "participants": [PHONE["b"]], "action": action})

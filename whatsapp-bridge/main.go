@@ -1193,6 +1193,218 @@ func handleGroupParticipants(client *whatsmeow.Client) http.HandlerFunc {
 	}
 }
 
+// GroupActionResponse is the response for the group invite/join/settings routes.
+// Link carries a secret invite link: it is only ever returned to the caller,
+// never logged.
+type GroupActionResponse struct {
+	Success bool   `json:"success"`
+	Message string `json:"message"`
+	Link    string `json:"link,omitempty"`
+	JID     string `json:"jid,omitempty"`
+}
+
+const maxGroupTopicRunes = 2048
+
+var inviteCodeRe = regexp.MustCompile(`^[A-Za-z0-9_-]{10,64}$`)
+
+// parseGroupJID validates a @g.us JID.
+func parseGroupJID(raw string) (types.JID, error) {
+	jid, err := types.ParseJID(raw)
+	if err != nil || jid.Server != types.GroupServer {
+		return types.JID{}, fmt.Errorf("Invalid group_jid: must be a @g.us JID")
+	}
+	return jid, nil
+}
+
+// parseInviteCode accepts a bare invite code or a chat.whatsapp.com link and
+// returns the code. Errors never echo the input (it is a secret).
+func parseInviteCode(link string) (string, error) {
+	code := strings.TrimSpace(link)
+	code = strings.TrimPrefix(code, "https://")
+	code = strings.TrimPrefix(code, "http://")
+	code = strings.TrimPrefix(code, "chat.whatsapp.com/")
+	if i := strings.IndexAny(code, "?#"); i >= 0 {
+		code = code[:i]
+	}
+	if !inviteCodeRe.MatchString(code) {
+		return "", fmt.Errorf("Invalid invite link or code")
+	}
+	return code, nil
+}
+
+// GroupSettingsRequest is a partial update: nil fields are left unchanged.
+type GroupSettingsRequest struct {
+	GroupJID string  `json:"group_jid"`
+	Name     *string `json:"name"`
+	Topic    *string `json:"topic"`
+	Announce *bool   `json:"announce"`
+	Locked   *bool   `json:"locked"`
+}
+
+// validateGroupSettings requires at least one field and enforces WhatsApp's
+// limits (name 1-25 chars as in create_group, topic up to 2048; empty topic
+// clears the description).
+func validateGroupSettings(req GroupSettingsRequest) error {
+	if req.Name == nil && req.Topic == nil && req.Announce == nil && req.Locked == nil {
+		return fmt.Errorf("Invalid request: at least one of name, topic, announce, locked required")
+	}
+	if req.Name != nil {
+		if strings.TrimSpace(*req.Name) == "" {
+			return fmt.Errorf("Group name is required")
+		}
+		if len([]rune(*req.Name)) > 25 {
+			return fmt.Errorf("Group name must be 25 characters or fewer")
+		}
+	}
+	if req.Topic != nil && len([]rune(*req.Topic)) > maxGroupTopicRunes {
+		return fmt.Errorf("Group topic must be %d characters or fewer", maxGroupTopicRunes)
+	}
+	return nil
+}
+
+func writeGroupAction(w http.ResponseWriter, status int, resp GroupActionResponse) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	json.NewEncoder(w).Encode(resp)
+}
+
+// groupClientReady writes a 503 and returns false when the client is offline.
+func groupClientReady(w http.ResponseWriter, client *whatsmeow.Client) bool {
+	if client == nil || !client.IsConnected() {
+		writeGroupAction(w, http.StatusServiceUnavailable, GroupActionResponse{Message: "WhatsApp client not connected"})
+		return false
+	}
+	return true
+}
+
+// handleGroupInvite returns the handler for GET /api/group_invite (fetch the
+// current link) and, with reset=true, POST /api/group_invite_reset (revoke the
+// old link and return a new one).
+func handleGroupInvite(client *whatsmeow.Client, reset bool) http.HandlerFunc {
+	method := http.MethodGet
+	if reset {
+		method = http.MethodPost
+	}
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != method {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		var raw string
+		if reset {
+			var req struct {
+				GroupJID string `json:"group_jid"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.GroupJID == "" {
+				http.Error(w, "Invalid request: group_jid required", http.StatusBadRequest)
+				return
+			}
+			raw = req.GroupJID
+		} else {
+			raw = r.URL.Query().Get("group_jid")
+		}
+		groupJID, err := parseGroupJID(raw)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		if !groupClientReady(w, client) {
+			return
+		}
+		link, err := client.GetGroupInviteLink(r.Context(), groupJID, reset)
+		if err != nil {
+			writeGroupAction(w, http.StatusInternalServerError, GroupActionResponse{Message: fmt.Sprintf("GetGroupInviteLink error: %v", err)})
+			return
+		}
+		writeGroupAction(w, http.StatusOK, GroupActionResponse{Success: true, Message: "invite link retrieved", Link: link})
+	}
+}
+
+// handleGroupJoin returns the handler for POST /api/group_join.
+func handleGroupJoin(client *whatsmeow.Client) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		var req struct {
+			Link string `json:"link"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Link == "" {
+			http.Error(w, "Invalid request: link required", http.StatusBadRequest)
+			return
+		}
+		code, err := parseInviteCode(req.Link)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		if !groupClientReady(w, client) {
+			return
+		}
+		jid, err := client.JoinGroupWithLink(r.Context(), code)
+		if err != nil {
+			writeGroupAction(w, http.StatusInternalServerError, GroupActionResponse{Message: fmt.Sprintf("JoinGroupWithLink error: %v", err)})
+			return
+		}
+		writeGroupAction(w, http.StatusOK, GroupActionResponse{Success: true, Message: "joined group", JID: jid.String()})
+	}
+}
+
+// handleGroupSettings returns the handler for POST /api/group_settings.
+// Settings are applied in order name, topic, announce, locked; on the first
+// failure the response says what was already applied.
+func handleGroupSettings(client *whatsmeow.Client) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		var req GroupSettingsRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.GroupJID == "" {
+			http.Error(w, "Invalid request: group_jid required", http.StatusBadRequest)
+			return
+		}
+		groupJID, err := parseGroupJID(req.GroupJID)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		if err := validateGroupSettings(req); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		if !groupClientReady(w, client) {
+			return
+		}
+		ctx := r.Context()
+		var applied []string
+		steps := []struct {
+			field string
+			set   bool
+			do    func() error
+		}{
+			{"name", req.Name != nil, func() error { return client.SetGroupName(ctx, groupJID, *req.Name) }},
+			{"topic", req.Topic != nil, func() error { return client.SetGroupTopic(ctx, groupJID, "", "", *req.Topic) }},
+			{"announce", req.Announce != nil, func() error { return client.SetGroupAnnounce(ctx, groupJID, *req.Announce) }},
+			{"locked", req.Locked != nil, func() error { return client.SetGroupLocked(ctx, groupJID, *req.Locked) }},
+		}
+		for _, s := range steps {
+			if !s.set {
+				continue
+			}
+			if err := s.do(); err != nil {
+				writeGroupAction(w, http.StatusInternalServerError, GroupActionResponse{
+					Message: fmt.Sprintf("Set %s error: %v (applied before failure: %v)", s.field, err, applied),
+				})
+				return
+			}
+			applied = append(applied, s.field)
+		}
+		writeGroupAction(w, http.StatusOK, GroupActionResponse{Success: true, Message: fmt.Sprintf("updated: %s", strings.Join(applied, ", "))})
+	}
+}
+
 // ChatPresenceRequest represents a request to send a typing/recording indicator.
 type ChatPresenceRequest struct {
 	ChatJID string `json:"chat_jid"`
@@ -2883,6 +3095,7 @@ img{border:8px solid white;border-radius:8px;box-shadow:0 4px 20px rgba(0,0,0,.2
 		}
 		json.NewEncoder(w).Encode(map[string]interface{}{
 			"success": true, "name": groupInfo.Name, "participants": participants,
+			"topic": groupInfo.Topic, "announce": groupInfo.IsAnnounce, "locked": groupInfo.IsLocked,
 		})
 	})
 
@@ -3259,6 +3472,10 @@ img{border:8px solid white;border-radius:8px;box-shadow:0 4px 20px rgba(0,0,0,.2
 
 	// Handler for adding, removing, promoting or demoting group participants.
 	http.HandleFunc("/api/group_participants", handleGroupParticipants(client))
+	http.HandleFunc("/api/group_invite", handleGroupInvite(client, false))
+	http.HandleFunc("/api/group_invite_reset", handleGroupInvite(client, true))
+	http.HandleFunc("/api/group_join", handleGroupJoin(client))
+	http.HandleFunc("/api/group_settings", handleGroupSettings(client))
 
 	// Handler for sending a typing/recording indicator to a chat.
 	http.HandleFunc("/api/chat_presence", handleChatPresence(client))

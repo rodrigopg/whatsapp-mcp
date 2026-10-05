@@ -25,6 +25,9 @@ from whatsapp import (
     delete_message as whatsapp_delete_message,
     update_group_participants as whatsapp_update_group_participants,
     send_chat_presence as whatsapp_send_chat_presence,
+    get_group_invite_link as whatsapp_get_group_invite_link,
+    join_group_with_link as whatsapp_join_group_with_link,
+    update_group_settings as whatsapp_update_group_settings,
     check_whatsapp as whatsapp_check_whatsapp
 )
 
@@ -475,6 +478,61 @@ def update_group_participants(
         "message": message,
         "participants": participants
     }
+
+
+@mcp.tool()
+def get_group_invite_link(group_jid: str, reset: bool = False) -> Dict[str, Any]:
+    """Get a WhatsApp group's invite link (you must be a group admin).
+
+    Args:
+        group_jid: The group JID (must end with @g.us)
+        reset: If true, revoke the current link and generate a new one
+            (anyone holding the old link can no longer join).
+
+    The link is a secret: anyone with it can join the group. Share it deliberately.
+    """
+    success, message, link = whatsapp_get_group_invite_link(group_jid, reset)
+    result: Dict[str, Any] = {"success": success, "message": message}
+    if link:
+        result["link"] = link
+    return result
+
+
+@mcp.tool()
+def join_group_with_link(link: str) -> Dict[str, Any]:
+    """Join a WhatsApp group using an invite link or bare invite code.
+
+    Args:
+        link: https://chat.whatsapp.com/<code> or just the code
+
+    Returns the joined group's JID on success.
+    """
+    success, message, jid = whatsapp_join_group_with_link(link)
+    result: Dict[str, Any] = {"success": success, "message": message}
+    if jid:
+        result["jid"] = jid
+    return result
+
+
+@mcp.tool()
+def update_group_settings(
+    group_jid: str,
+    name: Optional[str] = None,
+    topic: Optional[str] = None,
+    announce: Optional[bool] = None,
+    locked: Optional[bool] = None,
+) -> Dict[str, Any]:
+    """Update a WhatsApp group's settings. Only the fields you pass are changed (requires group admin).
+
+    Args:
+        group_jid: The group JID (must end with @g.us)
+        name: New group name (1-25 characters)
+        topic: New group description (up to 2048 characters; empty string clears it)
+        announce: true = only admins can send messages
+        locked: true = only admins can edit group info
+    """
+    success, message = whatsapp_update_group_settings(group_jid, name, topic, announce, locked)
+    return {"success": success, "message": message}
 
 
 @mcp.tool()

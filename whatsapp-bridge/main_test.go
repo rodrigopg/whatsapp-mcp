@@ -733,3 +733,58 @@ func TestExtractDirectPathFromURLKeepsQuery(t *testing.T) {
 		t.Fatalf("got %q, want %q", got, want)
 	}
 }
+
+func TestParseInviteCode(t *testing.T) {
+	ok := map[string]string{
+		"AbCdEfGhIjKlMnOpQrStUv":                                "AbCdEfGhIjKlMnOpQrStUv",
+		"https://chat.whatsapp.com/AbCdEfGhIjKlMnOpQrStUv":      "AbCdEfGhIjKlMnOpQrStUv",
+		" chat.whatsapp.com/AbCdEfGhIjKlMnOpQrStUv?mode=r_t \n": "AbCdEfGhIjKlMnOpQrStUv",
+	}
+	for in, want := range ok {
+		got, err := parseInviteCode(in)
+		if err != nil || got != want {
+			t.Errorf("parseInviteCode(%q) = %q, %v; want %q", in, got, err, want)
+		}
+	}
+	for _, in := range []string{"", "short", "has space inside code!!", "https://evil.example/AbCdEfGhIjKlMnOpQrStUv", "../../etc/passwd"} {
+		_, err := parseInviteCode(in)
+		if err == nil {
+			t.Errorf("parseInviteCode(%q) accepted", in)
+		} else if in != "" && strings.Contains(err.Error(), in) {
+			t.Errorf("error echoes input %q", in)
+		}
+	}
+}
+
+func TestValidateGroupSettings(t *testing.T) {
+	s := func(v string) *string { return &v }
+	b := func(v bool) *bool { return &v }
+	good := []GroupSettingsRequest{
+		{Name: s("ok")}, {Topic: s("")}, {Announce: b(false)}, {Locked: b(true)},
+		{Name: s(strings.Repeat("é", 25))}, {Topic: s(strings.Repeat("x", maxGroupTopicRunes))},
+	}
+	for i, r := range good {
+		if err := validateGroupSettings(r); err != nil {
+			t.Errorf("good[%d]: %v", i, err)
+		}
+	}
+	bad := []GroupSettingsRequest{
+		{}, {Name: s("  ")}, {Name: s(strings.Repeat("é", 26))}, {Topic: s(strings.Repeat("x", maxGroupTopicRunes+1))},
+	}
+	for i, r := range bad {
+		if err := validateGroupSettings(r); err == nil {
+			t.Errorf("bad[%d] accepted", i)
+		}
+	}
+}
+
+func TestParseGroupJID(t *testing.T) {
+	if _, err := parseGroupJID("120363012345678901@g.us"); err != nil {
+		t.Fatal(err)
+	}
+	for _, in := range []string{"", "5562999999999@s.whatsapp.net", "5562999999999"} {
+		if _, err := parseGroupJID(in); err == nil {
+			t.Errorf("parseGroupJID(%q) accepted", in)
+		}
+	}
+}

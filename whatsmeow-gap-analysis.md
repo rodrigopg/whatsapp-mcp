@@ -35,8 +35,8 @@
 | 9 | **Está no WhatsApp?** (valida número) | `IsOnWhatsApp` | ✅ | ✅ | **B** | Alto |
 | 10 | **Info de usuário** (status, pic, devices) | `GetUserInfo`/`GetProfilePictureInfo` | ❌ | ❌ | **B** | Médio |
 | 11 | **Enquete** (criar + ler votos) | `BuildPollCreation`/`DecryptPollVote` | ❌ | ❌ | **B** | Médio |
-| 12 | **Link de convite do grupo** (get/join) | `GetGroupInviteLink`/`JoinGroupWithLink` | ❌ | ❌ | **B** | Médio |
-| 13 | **Setters de grupo** (nome/tópico/foto/anúncio/locked) | `SetGroupName`/`SetGroupTopic`/`SetGroupPhoto`/`SetGroupAnnounce`/`SetGroupLocked` | ❌ | ❌ | **B** | Médio |
+| 12 | **Link de convite do grupo** (get/reset/join) | `GetGroupInviteLink`/`JoinGroupWithLink` | ✅ `/api/group_invite`, `/api/group_invite_reset`, `/api/group_join` | ✅ | **B** | Médio — done |
+| 13 | **Setters de grupo** (nome/tópico/anúncio/locked; foto fora do escopo) | `SetGroupName`/`SetGroupTopic`/`SetGroupAnnounce`/`SetGroupLocked` | ✅ `/api/group_settings` | ✅ | **B** | Médio — done (`SetGroupPhoto` pending) |
 | 14 | **Read receipt explícito** (marcar lida via app-state ✅; receipt real ❌) | `MarkRead` | parcial | parcial | **B** | Médio |
 | 15 | **Presença global** (online/offline) | `SendPresence`/`SubscribePresence` | ❌ | ❌ | **B** | Baixo |
 | 16 | **Bloquear/desbloquear** | `UpdateBlocklist`/`GetBlocklist` | ❌ | ❌ | **B** | Baixo |

@@ -675,6 +675,9 @@ def get_group_info(jid: str) -> Tuple[bool, str, Optional[dict]]:
         info = {
             "name": result.get("name", ""),
             "participants": result.get("participants", []),
+            "topic": result.get("topic", ""),
+            "announce": bool(result.get("announce", False)),
+            "locked": bool(result.get("locked", False)),
         }
         return True, "Group info retrieved", info
     except requests.RequestException as e:
@@ -836,6 +839,60 @@ def update_group_participants(group_jid: str, participants: List[str], action: s
         return False, f"Request error: {str(e)}", []
     except Exception as e:
         return False, f"Unexpected error: {str(e)}", []
+
+
+def _group_action(method: str, path: str, **kw) -> Tuple[bool, str, dict]:
+    """Call a group route; returns (success, message, raw result dict)."""
+    try:
+        response = _api_request(method, path, **kw)
+        try:
+            result = response.json()
+        except json.JSONDecodeError:
+            return False, f"Error parsing response: {response.text}", {}
+        return bool(result.get("success", False)), result.get("message", "Unknown response"), result
+    except requests.RequestException as e:
+        return False, f"Request error: {str(e)}", {}
+    except Exception as e:
+        return False, f"Unexpected error: {str(e)}", {}
+
+
+def get_group_invite_link(group_jid: str, reset: bool = False) -> Tuple[bool, str, Optional[str]]:
+    """Get a group's invite link; reset=True revokes the old one and returns a new one."""
+    if not group_jid or not group_jid.strip():
+        return False, "group_jid is required", None
+    if reset:
+        ok, msg, res = _group_action("POST", "/group_invite_reset", json={"group_jid": group_jid})
+    else:
+        ok, msg, res = _group_action("GET", "/group_invite", params={"group_jid": group_jid})
+    return ok, msg, res.get("link") if ok else None
+
+
+def join_group_with_link(link: str) -> Tuple[bool, str, Optional[str]]:
+    """Join a group via invite link or bare code. Returns (success, message, group_jid)."""
+    if not link or not link.strip():
+        return False, "link is required", None
+    ok, msg, res = _group_action("POST", "/group_join", json={"link": link})
+    return ok, msg, res.get("jid") if ok else None
+
+
+def update_group_settings(
+    group_jid: str,
+    name: Optional[str] = None,
+    topic: Optional[str] = None,
+    announce: Optional[bool] = None,
+    locked: Optional[bool] = None,
+) -> Tuple[bool, str]:
+    """Update group name/topic/announce/locked; only the fields given are changed."""
+    if not group_jid or not group_jid.strip():
+        return False, "group_jid is required"
+    payload: dict = {"group_jid": group_jid}
+    for key, val in (("name", name), ("topic", topic), ("announce", announce), ("locked", locked)):
+        if val is not None:
+            payload[key] = val
+    if len(payload) == 1:
+        return False, "at least one of name, topic, announce, locked is required"
+    ok, msg, _ = _group_action("POST", "/group_settings", json=payload)
+    return ok, msg
 
 
 def send_chat_presence(chat_jid: str, state: str, media: str = "") -> Tuple[bool, str]:

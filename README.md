@@ -265,6 +265,9 @@ Go WhatsApp Bridge (whatsapp-bridge/)
 | `leave_group` | Leave a group |
 | `update_group_participants` | Add/remove/promote/demote group members |
 | `send_chat_presence` | Send typing or recording indicators |
+| `get_group_invite_link` | Get a group invite link, or revoke it and get a new one (`reset`) |
+| `join_group_with_link` | Join a group by invite link or code |
+| `update_group_settings` | Set group name, description, announce-only, locked |
 | `check_whatsapp` | Check if phone numbers are registered on WhatsApp |
 
 ---
