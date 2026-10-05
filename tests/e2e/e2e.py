@@ -35,6 +35,11 @@ COMPOSE = ["docker", "compose", "--env-file", os.path.join(HERE, ".env"),
 MODE = os.environ.get("E2E_MODE") or ENV.get("E2E_MODE", "docker")  # "native": bridges are plain processes started by native.sh
 SEND_GAP = 2  # seconds between sends: keep the automation footprint small
 
+MCP_READ_TOOLS = {
+    "search_contacts", "list_messages", "list_chats", "get_chat", "get_direct_chat_by_contact",
+    "get_contact_chats", "get_last_interaction", "get_message_context", "get_group_info",
+    "resolve_contact", "check_whatsapp", "get_poll_votes",
+}
 MCP_TOOLS = {
     "archive_chat",
     "check_whatsapp",
@@ -411,24 +416,30 @@ class E2E(unittest.TestCase):
         from mcp.client.stdio import stdio_client
 
         server_dir = os.path.join(HERE, "..", "..", "whatsapp-mcp-server")
-        params = StdioServerParameters(
-            command="uv", args=["run", "--project", server_dir, "python", os.path.join(server_dir, "main.py")],
-            env={**os.environ, "WHATSAPP_API_BASE_URL": f"http://127.0.0.1:{PORT['a']}/api",
-                 "WHATSAPP_API_AUTH_TOKEN": TOKEN})
 
-        async def run():
-            async with stdio_client(params) as (r, w):
+        def params(**extra):
+            return StdioServerParameters(
+                command="uv", args=["run", "--project", server_dir, "python", os.path.join(server_dir, "main.py")],
+                env={**os.environ, "WHATSAPP_API_BASE_URL": f"http://127.0.0.1:{PORT['a']}/api",
+                     "WHATSAPP_API_AUTH_TOKEN": TOKEN, **extra})
+
+        async def run(p, calls):
+            async with stdio_client(p) as (r, w):
                 async with ClientSession(r, w) as s:
                     await s.initialize()
                     names = {t.name for t in (await s.list_tools()).tools}
-                    chats = await s.call_tool("list_chats", {"limit": 3})
-                    chk = await s.call_tool("check_whatsapp", {"phones": [PHONE["b"]]})
-                    return names, chats, chk
+                    return names, [await s.call_tool(n, a) for n, a in calls]
 
-        names, chats, chk = asyncio.run(run())
+        names, (chats, chk) = asyncio.run(run(params(), [
+            ("list_chats", {"limit": 3}), ("check_whatsapp", {"phones": [PHONE["b"]]})]))
         self.assertEqual(names, MCP_TOOLS, f"tool set changed: +{names - MCP_TOOLS} -{MCP_TOOLS - names}")
         self.assertFalse(chats.isError)
         self.assertFalse(chk.isError)
+
+        # MCP_READONLY=true: exactly the read subset, and the read tools still work.
+        ro_names, (ro_chats,) = asyncio.run(run(params(MCP_READONLY="true"), [("list_chats", {"limit": 3})]))
+        self.assertEqual(ro_names, MCP_READ_TOOLS, f"readonly set: +{ro_names - MCP_READ_TOOLS} -{MCP_READ_TOOLS - ro_names}")
+        self.assertFalse(ro_chats.isError)
 
 
 if __name__ == "__main__":

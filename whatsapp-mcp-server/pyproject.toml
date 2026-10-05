@@ -5,6 +5,6 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
-    "mcp[cli]>=1.6.0",
+    "mcp[cli]>=1.9.0,<1.10",  # streamable HTTP needs >=1.9; 1.10+ pulls pyjwt/cryptography (native build) for auth we do not use
     "requests>=2.32.3",
 ]

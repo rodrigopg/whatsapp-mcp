@@ -1,3 +1,6 @@
+import hmac
+import os
+import sys
 from typing import List, Dict, Any, Optional
 from mcp.server.fastmcp import FastMCP
 from whatsapp import (
@@ -36,7 +39,20 @@ from whatsapp import (
 # Initialize FastMCP server
 mcp = FastMCP("whatsapp")
 
-@mcp.tool()
+# MCP_READONLY=true registers only the read tools; write tools are never exposed.
+READONLY = os.environ.get("MCP_READONLY", "").strip().lower() in ("1", "true", "yes", "on")
+
+
+def read_tool(fn):
+    return mcp.tool()(fn)
+
+
+def write_tool(fn):
+    # download_media counts as a write: it writes files to disk.
+    return fn if READONLY else mcp.tool()(fn)
+
+
+@read_tool
 def search_contacts(query: str) -> List[Dict[str, Any]]:
     """Search WhatsApp contacts by name or phone number.
     
@@ -46,7 +62,7 @@ def search_contacts(query: str) -> List[Dict[str, Any]]:
     contacts = whatsapp_search_contacts(query)
     return contacts
 
-@mcp.tool()
+@read_tool
 def list_messages(
     after: Optional[str] = None,
     before: Optional[str] = None,
@@ -87,7 +103,7 @@ def list_messages(
     )
     return messages
 
-@mcp.tool()
+@read_tool
 def list_chats(
     query: Optional[str] = None,
     limit: int = 20,
@@ -113,7 +129,7 @@ def list_chats(
     )
     return chats
 
-@mcp.tool()
+@read_tool
 def get_chat(chat_jid: str, include_last_message: bool = True) -> Dict[str, Any]:
     """Get WhatsApp chat metadata by JID.
     
@@ -124,7 +140,7 @@ def get_chat(chat_jid: str, include_last_message: bool = True) -> Dict[str, Any]
     chat = whatsapp_get_chat(chat_jid, include_last_message)
     return chat
 
-@mcp.tool()
+@read_tool
 def get_direct_chat_by_contact(sender_phone_number: str) -> Dict[str, Any]:
     """Get WhatsApp chat metadata by sender phone number.
     
@@ -134,7 +150,7 @@ def get_direct_chat_by_contact(sender_phone_number: str) -> Dict[str, Any]:
     chat = whatsapp_get_direct_chat_by_contact(sender_phone_number)
     return chat
 
-@mcp.tool()
+@read_tool
 def get_contact_chats(jid: str, limit: int = 20, page: int = 0) -> List[Dict[str, Any]]:
     """Get all WhatsApp chats involving the contact.
     
@@ -146,7 +162,7 @@ def get_contact_chats(jid: str, limit: int = 20, page: int = 0) -> List[Dict[str
     chats = whatsapp_get_contact_chats(jid, limit, page)
     return chats
 
-@mcp.tool()
+@read_tool
 def get_last_interaction(jid: str) -> str:
     """Get most recent WhatsApp message involving the contact.
     
@@ -156,7 +172,7 @@ def get_last_interaction(jid: str) -> str:
     message = whatsapp_get_last_interaction(jid)
     return message
 
-@mcp.tool()
+@read_tool
 def get_message_context(
     message_id: str,
     before: int = 5,
@@ -172,7 +188,7 @@ def get_message_context(
     context = whatsapp_get_message_context(message_id, before, after)
     return context
 
-@mcp.tool()
+@write_tool
 def send_message(
     recipient: str,
     message: str
@@ -201,7 +217,7 @@ def send_message(
         "message": status_message
     }
 
-@mcp.tool()
+@write_tool
 def send_file(recipient: str, media_path: str) -> Dict[str, Any]:
     """Send a file such as a picture, raw audio, video or document via WhatsApp to the specified recipient. For group messages use the JID.
     
@@ -221,7 +237,7 @@ def send_file(recipient: str, media_path: str) -> Dict[str, Any]:
         "message": status_message
     }
 
-@mcp.tool()
+@write_tool
 def send_audio_message(recipient: str, media_path: str) -> Dict[str, Any]:
     """Send any audio file as a WhatsApp audio message to the specified recipient. For group messages use the JID. If it errors due to ffmpeg not being installed, use send_file instead.
     
@@ -239,7 +255,7 @@ def send_audio_message(recipient: str, media_path: str) -> Dict[str, Any]:
         "message": status_message
     }
 
-@mcp.tool()
+@write_tool
 def download_media(message_id: str, chat_jid: str) -> Dict[str, Any]:
     """Download media from a WhatsApp message and get the local file path.
     
@@ -264,7 +280,7 @@ def download_media(message_id: str, chat_jid: str) -> Dict[str, Any]:
             "message": "Failed to download media"
         }
 
-@mcp.tool()
+@write_tool
 def create_group(
     name: str,
     participants: List[str],
@@ -295,7 +311,7 @@ def create_group(
     return response
 
 
-@mcp.tool()
+@write_tool
 def leave_group(jid: str) -> Dict[str, Any]:
     """Leave a WhatsApp group. Note: WhatsApp has no 'delete group' — leaving is
     the closest action.
@@ -310,7 +326,7 @@ def leave_group(jid: str) -> Dict[str, Any]:
     return {"success": success, "message": message}
 
 
-@mcp.tool()
+@write_tool
 def mark_chat_as_read(
     chat_jid: str,
     message_ids: List[str],
@@ -334,7 +350,7 @@ def mark_chat_as_read(
     return {"success": success, "message": message}
 
 
-@mcp.tool()
+@write_tool
 def mark_chat_as_unread(chat_jid: str) -> Dict[str, Any]:
     """Mark a WhatsApp chat as unread (app-state sync — affects WhatsApp app badge).
 
@@ -345,7 +361,7 @@ def mark_chat_as_unread(chat_jid: str) -> Dict[str, Any]:
     return {"success": success, "message": message}
 
 
-@mcp.tool()
+@read_tool
 def get_group_info(jid: str) -> Dict[str, Any]:
     """Get a WhatsApp group's name and participant list.
 
@@ -359,7 +375,7 @@ def get_group_info(jid: str) -> Dict[str, Any]:
     return result
 
 
-@mcp.tool()
+@write_tool
 def archive_chat(chat_jid: str, archive: bool = True) -> Dict[str, Any]:
     """Archive or unarchive a WhatsApp chat (app-state sync — affects WhatsApp app).
 
@@ -371,7 +387,7 @@ def archive_chat(chat_jid: str, archive: bool = True) -> Dict[str, Any]:
     return {"success": success, "message": message}
 
 
-@mcp.tool()
+@read_tool
 def resolve_contact(phone: str) -> Dict[str, Any]:
     """Resolve a phone number to its WhatsApp JIDs (regular + LID, if any).
 
@@ -382,7 +398,7 @@ def resolve_contact(phone: str) -> Dict[str, Any]:
     return {"success": success, "message": message, "jids": jids}
 
 
-@mcp.tool()
+@write_tool
 def create_poll(
     chat_jid: str,
     question: str,
@@ -401,7 +417,7 @@ def create_poll(
     return {"success": success, "message": message}
 
 
-@mcp.tool()
+@read_tool
 def get_poll_votes(chat_jid: str, message_id: str) -> Dict[str, Any]:
     """Read the recorded votes of a poll.
 
@@ -418,7 +434,7 @@ def get_poll_votes(chat_jid: str, message_id: str) -> Dict[str, Any]:
     return result
 
 
-@mcp.tool()
+@write_tool
 def react_to_message(
     chat_jid: str,
     message_id: str,
@@ -441,7 +457,7 @@ def react_to_message(
     return {"success": success, "message": message}
 
 
-@mcp.tool()
+@write_tool
 def edit_message(
     chat_jid: str,
     message_id: str,
@@ -462,7 +478,7 @@ def edit_message(
     return {"success": success, "message": message}
 
 
-@mcp.tool()
+@write_tool
 def delete_message(
     chat_jid: str,
     message_id: str,
@@ -481,7 +497,7 @@ def delete_message(
     return {"success": success, "message": message}
 
 
-@mcp.tool()
+@write_tool
 def update_group_participants(
     group_jid: str,
     participants: List[str],
@@ -518,7 +534,7 @@ def update_group_participants(
     }
 
 
-@mcp.tool()
+@write_tool
 def get_group_invite_link(group_jid: str, reset: bool = False) -> Dict[str, Any]:
     """Get a WhatsApp group's invite link (you must be a group admin).
 
@@ -536,7 +552,7 @@ def get_group_invite_link(group_jid: str, reset: bool = False) -> Dict[str, Any]
     return result
 
 
-@mcp.tool()
+@write_tool
 def join_group_with_link(link: str) -> Dict[str, Any]:
     """Join a WhatsApp group using an invite link or bare invite code.
 
@@ -552,7 +568,7 @@ def join_group_with_link(link: str) -> Dict[str, Any]:
     return result
 
 
-@mcp.tool()
+@write_tool
 def update_group_settings(
     group_jid: str,
     name: Optional[str] = None,
@@ -573,7 +589,7 @@ def update_group_settings(
     return {"success": success, "message": message}
 
 
-@mcp.tool()
+@write_tool
 def send_chat_presence(
     chat_jid: str,
     state: str,
@@ -596,7 +612,7 @@ def send_chat_presence(
     return {"success": success, "message": message}
 
 
-@mcp.tool()
+@read_tool
 def check_whatsapp(phones: List[str]) -> Dict[str, Any]:
     """Check if phone numbers are registered on WhatsApp.
 
@@ -634,6 +650,55 @@ def check_whatsapp(phones: List[str]) -> Dict[str, Any]:
     }
 
 
+
+def check_http_config(host: str, token: str) -> None:
+    """The HTTP transport never starts without a bearer token, loopback or not."""
+    if not token:
+        raise SystemExit(
+            f"MCP_AUTH_TOKEN is required for MCP_TRANSPORT=streamable-http (MCP_HOST={host})"
+        )
+
+
+class BearerAuth:
+    """ASGI middleware: 401 unless `Authorization: Bearer <token>` matches (constant time)."""
+
+    def __init__(self, app, token: str):
+        self.app = app
+        self.token = token.encode()
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] == "lifespan":
+            return await self.app(scope, receive, send)
+        if scope["type"] != "http":
+            # MCP over HTTP uses plain http only. Refuse anything else (websocket, ...) instead of passing it
+            # through unauthenticated; a websocket gets a policy-violation close.
+            if scope["type"] == "websocket":
+                await send({"type": "websocket.close", "code": 1008})
+            return
+        auth = dict(scope["headers"]).get(b"authorization", b"")
+        scheme, _, given = auth.partition(b" ")
+        if scheme.lower() == b"bearer" and hmac.compare_digest(given.strip(), self.token):
+            return await self.app(scope, receive, send)
+        await send({"type": "http.response.start", "status": 401,
+                    "headers": [(b"content-type", b"text/plain"), (b"www-authenticate", b"Bearer")]})
+        await send({"type": "http.response.body", "body": b"unauthorized"})
+
+
+def main() -> None:
+    transport = os.environ.get("MCP_TRANSPORT", "stdio").strip().lower()
+    if transport == "stdio":
+        mcp.run(transport="stdio")
+    elif transport == "streamable-http":
+        import uvicorn
+
+        host = os.environ.get("MCP_HOST", "127.0.0.1")
+        port = int(os.environ.get("MCP_PORT", "8000"))
+        token = os.environ.get("MCP_AUTH_TOKEN", "")
+        check_http_config(host, token)
+        uvicorn.run(BearerAuth(mcp.streamable_http_app(), token), host=host, port=port)
+    else:
+        sys.exit(f"unsupported MCP_TRANSPORT={transport!r} (use stdio or streamable-http)")
+
+
 if __name__ == "__main__":
-    # Initialize and run the server
-    mcp.run(transport='stdio')
+    main()

@@ -134,6 +134,18 @@ it doesn't read any local SQLite file — so pointing `WHATSAPP_API_BASE_URL` at
 enough. Don't bind the bridge's REST API to a public IP without `API_AUTH_TOKEN` set; a private
 network (Tailscale, WireGuard, SSH tunnel) plus the token is the recommended setup.
 
+**Read-only and remote MCP (opt-in).** Both are off by default; stdio installs behave exactly as before.
+
+- `MCP_READONLY=true` — registers only the read tools (`search_contacts`, `list_messages`, `list_chats`, `get_chat`, `get_direct_chat_by_contact`, `get_contact_chats`, `get_last_interaction`, `get_message_context`, `get_group_info`, `resolve_contact`, `check_whatsapp`). Every write tool, including `download_media` (it writes files to disk), is not exposed at all. Works with either transport.
+- `MCP_TRANSPORT=streamable-http` — serves MCP over HTTP instead of stdio, at `http://<MCP_HOST>:<MCP_PORT>/mcp/` (defaults `127.0.0.1` and `8000`; keep the trailing slash). `MCP_AUTH_TOKEN` is **mandatory**: the server refuses to start without it, and every request needs `Authorization: Bearer <token>` (checked in constant time, 401 otherwise).
+
+```bash
+MCP_TRANSPORT=streamable-http MCP_READONLY=true MCP_AUTH_TOKEN="$(openssl rand -hex 32)" \
+  uv run --directory whatsapp-mcp-server main.py
+```
+
+Security: the HTTP transport has no TLS. A bearer token over plain HTTP is readable by anyone on the path, so keep the default loopback bind and reach it through an SSH tunnel, Tailscale/WireGuard, or a TLS-terminating reverse proxy. Prefer `MCP_READONLY=true` for any remote client: a leaked token on a read-only server cannot send, delete or download anything, but it can still read all your messages. Requires `mcp>=1.9` (the lockfile pins 1.9.4).
+
 ---
 
 ## Installation
