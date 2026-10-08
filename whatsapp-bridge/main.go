@@ -3954,6 +3954,16 @@ func GetChatName(client *whatsmeow.Client, messageStore *MessageStore, jid types
 	return name
 }
 
+// unwrapHistoryMessage strips the wrappers (DeviceSentMessage, EphemeralMessage,
+// ViewOnce*, EditedMessage, ...) from a raw history-sync message using
+// whatsmeow's own UnwrapRaw, so history and live messages are read the same way.
+func unwrapHistoryMessage(m *waProto.Message) *waProto.Message {
+	if m == nil {
+		return nil
+	}
+	return (&events.Message{RawMessage: m}).UnwrapRaw().Message
+}
+
 // Handle history sync events
 func handleHistorySync(client *whatsmeow.Client, messageStore *MessageStore, historySync *events.HistorySync, logger waLog.Logger) {
 	fmt.Printf("Received history sync event with %d conversations\n", len(historySync.Data.Conversations))
@@ -4006,16 +4016,23 @@ func handleHistorySync(client *whatsmeow.Client, messageStore *MessageStore, his
 					continue
 				}
 
+				// History sync hands over the raw message, still wrapped
+				// (ephemeral chats, sent from another device, view once); the
+				// live path receives it already unwrapped by whatsmeow. Read
+				// from the same shape, or wrapped messages look empty and are
+				// skipped below.
+				inner := unwrapHistoryMessage(msg.Message.Message)
+
 				// Extract text content (includes media captions)
-				content := extractTextContent(msg.Message.Message)
+				content := extractTextContent(inner)
 
 				// Extract media info
 				var mediaType, filename, url string
 				var mediaKey, fileSHA256, fileEncSHA256 []byte
 				var fileLength uint64
 
-				if msg.Message.Message != nil {
-					mediaType, filename, url, mediaKey, fileSHA256, fileEncSHA256, fileLength = extractMediaInfo(msg.Message.Message)
+				if inner != nil {
+					mediaType, filename, url, mediaKey, fileSHA256, fileEncSHA256, fileLength = extractMediaInfo(inner)
 				}
 
 				// Log the message content for debugging
