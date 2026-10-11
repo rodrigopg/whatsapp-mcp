@@ -7,6 +7,7 @@ from whatsapp import (
     search_contacts as whatsapp_search_contacts,
     list_messages as whatsapp_list_messages,
     list_chats as whatsapp_list_chats,
+    list_active_chats as whatsapp_list_active_chats,
     get_chat as whatsapp_get_chat,
     get_direct_chat_by_contact as whatsapp_get_direct_chat_by_contact,
     get_contact_chats as whatsapp_get_contact_chats,
@@ -128,6 +129,27 @@ def list_chats(
         sort_by=sort_by
     )
     return chats
+
+@read_tool
+def list_active_chats(
+    after: Optional[str] = None,
+    before: Optional[str] = None,
+    include_groups: bool = False
+) -> List[Dict[str, Any]]:
+    """List the conversations that had at least one message in a period, one row per conversation,
+    in chronological order of the first message. Use it to answer "who did I talk to on day X?".
+
+    Each row has jid, name, is_group, first_time, last_time, message_count, snippet (the last
+    message of the period, or [image]/[audio]/... for media) and link (opens the chat; null for
+    groups and for contacts whose phone is unknown, use the jid then). Your own chat, status and
+    newsletters are never listed. Show the rows as a table, never as running text.
+
+    Args:
+        after: ISO-8601 start of the period, with the user's UTC offset (e.g. 2026-05-21T00:00:00-03:00)
+        before: ISO-8601 end of the period, with the user's UTC offset (e.g. 2026-05-21T23:59:59-03:00)
+        include_groups: Also list groups (default False: people only)
+    """
+    return whatsapp_list_active_chats(after=after, before=before, include_groups=include_groups)
 
 @read_tool
 def get_chat(chat_jid: str, include_last_message: bool = True) -> Dict[str, Any]:

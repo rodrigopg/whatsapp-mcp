@@ -909,3 +909,112 @@ func TestHealthz(t *testing.T) {
 		}
 	}
 }
+
+func seedActiveMsg(t *testing.T, db *sql.DB, id, chat, content, mediaType string, fromMe bool, ts time.Time) {
+	t.Helper()
+	if _, err := db.Exec(`INSERT OR IGNORE INTO chats (jid, name, last_message_time) VALUES (?, '', ?)`, chat, ts); err != nil {
+		t.Fatalf("insert chat: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO messages (id, chat_jid, sender, content, timestamp, is_from_me, media_type) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		id, chat, chat, content, ts, fromMe, mediaType); err != nil {
+		t.Fatalf("insert message: %v", err)
+	}
+}
+
+// TestListActiveChats covers /api/chats/active: one row per conversation with
+// a message in the window, chronological by first message, own chat/status/
+// groups excluded by default, last message as the snippet, the window read as
+// real instants (a -03:00 day must include 22:00 local stored as 01:00Z).
+func TestListActiveChats(t *testing.T) {
+	store := setupChatStore(t)
+	db := store.db
+	utc := func(h, m int) time.Time { return time.Date(2026, 5, 21, h, m, 0, 0, time.UTC) }
+	for jid, name := range map[string]string{
+		"111@s.whatsapp.net": "Alice", "222@s.whatsapp.net": "Bob", "333@s.whatsapp.net": "Carol",
+		"999@s.whatsapp.net": "Eu mesmo", "120363@g.us": "Familia", "777@lid": "Gil",
+	} {
+		if _, err := db.Exec(`INSERT INTO chats (jid, name, last_message_time) VALUES (?, ?, ?)`, jid, name, utc(0, 0)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// 21/05 BRT = 03:00Z on the 21st until 03:00Z on the 22nd.
+	seedActiveMsg(t, db, "a1", "111@s.whatsapp.net", "oi", "", false, utc(13, 0))
+	seedActiveMsg(t, db, "a2", "111@s.whatsapp.net", "fechado, te mando amanha", "", true, time.Date(2026, 5, 22, 1, 0, 0, 0, time.UTC)) // 22:00 BRT
+	seedActiveMsg(t, db, "b1", "222@s.whatsapp.net", "", "image", false, utc(12, 0))
+	seedActiveMsg(t, db, "c1", "333@s.whatsapp.net", "transcricao do audio", "audio", false, utc(17, 0))
+	seedActiveMsg(t, db, "s1", "999@s.whatsapp.net", "nota para mim", "", true, utc(15, 0))
+	seedActiveMsg(t, db, "g1", "120363@g.us", "bom dia grupo", "", false, utc(14, 0))
+	seedActiveMsg(t, db, "st", "status@broadcast", "status", "", false, utc(14, 30))
+	seedActiveMsg(t, db, "l1", "777@lid", "sou um lid", "", false, utc(16, 0))
+	seedActiveMsg(t, db, "n1", "666@s.whatsapp.net", "sem nome", "", false, utc(18, 0))
+	seedActiveMsg(t, db, "o1", "888@s.whatsapp.net", "ontem", "", false, time.Date(2026, 5, 20, 20, 0, 0, 0, time.UTC)) // 17:00 BRT on the 20th
+	after, before := "2026-05-21T00:00:00-03:00", "2026-05-21T23:59:59-03:00"
+	toPN := func(jid string) string {
+		if jid == "777@lid" {
+			return "5562000000777@s.whatsapp.net"
+		}
+		return jid
+	}
+
+	resp, err := listActiveChats(db, ActiveChatsRequest{After: &after, Before: &before}, []string{"999"}, toPN)
+	if err != nil {
+		t.Fatalf("listActiveChats: %v", err)
+	}
+	var got []string
+	byName := map[string]ActiveChat{}
+	for _, c := range resp.Chats {
+		got = append(got, c.Name)
+		byName[c.Name] = c
+	}
+	want := []string{"Bob", "Alice", "Gil", "Carol", "666"} // by first message: 12:00,13:00,16:00,17:00,18:00Z
+	if len(got) != len(want) {
+		t.Fatalf("chats = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("chats = %v, want %v", got, want)
+		}
+	}
+	if a := byName["Alice"]; a.MessageCount != 2 || a.Snippet != "fechado, te mando amanha" {
+		t.Errorf("Alice = count %d snippet %q, want 2 / last message", a.MessageCount, a.Snippet)
+	}
+	if b := byName["Bob"]; b.Snippet != "[image]" {
+		t.Errorf("Bob snippet = %q, want [image]", b.Snippet)
+	}
+	if c := byName["Carol"]; c.Snippet != "transcricao do audio" {
+		t.Errorf("Carol snippet = %q, want the transcription", c.Snippet)
+	}
+	if a := byName["Alice"]; a.Link == nil || *a.Link != "https://wa.me/111" {
+		t.Errorf("Alice link = %v, want https://wa.me/111", a.Link)
+	}
+	if g := byName["Gil"]; g.Link == nil || *g.Link != "https://wa.me/5562000000777" {
+		t.Errorf("Gil (lid) link = %v, want the resolved phone", g.Link)
+	}
+
+	withGroups, err := listActiveChats(db, ActiveChatsRequest{After: &after, Before: &before, IncludeGroups: true}, []string{"999"}, toPN)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var group *ActiveChat
+	for i, c := range withGroups.Chats {
+		if c.IsGroup {
+			group = &withGroups.Chats[i]
+		}
+	}
+	if group == nil || group.Name != "Familia" || group.Link != nil {
+		t.Errorf("include_groups: group = %+v, want Familia flagged as group with no link", group)
+	}
+
+	empty := "2030-01-01T00:00:00-03:00"
+	emptyEnd := "2030-01-02T00:00:00-03:00"
+	none, err := listActiveChats(db, ActiveChatsRequest{After: &empty, Before: &emptyEnd}, nil, nil)
+	if err != nil || none.Chats == nil || len(none.Chats) != 0 {
+		t.Errorf("empty window = %+v, err %v; want an empty non-nil list", none, err)
+	}
+	bad := "ontem"
+	if _, err := listActiveChats(db, ActiveChatsRequest{After: &bad}, nil, nil); err == nil {
+		t.Error("invalid date must be an error")
+	} else if _, ok := err.(*errInvalidRequest); !ok {
+		t.Errorf("invalid date error type = %T, want *errInvalidRequest", err)
+	}
+}

@@ -136,7 +136,7 @@ network (Tailscale, WireGuard, SSH tunnel) plus the token is the recommended set
 
 **Read-only and remote MCP (opt-in).** Both are off by default; stdio installs behave exactly as before.
 
-- `MCP_READONLY=true` — registers only the read tools (`search_contacts`, `list_messages`, `list_chats`, `get_chat`, `get_direct_chat_by_contact`, `get_contact_chats`, `get_last_interaction`, `get_message_context`, `get_group_info`, `resolve_contact`, `check_whatsapp`, `get_poll_votes`). Tools that can change state under any argument are treated as writes, so `get_group_invite_link` (its `reset` flag revokes the link) is hidden too. Every write tool, including `download_media` (it writes files to disk), is not exposed at all. Works with either transport.
+- `MCP_READONLY=true` — registers only the read tools (`search_contacts`, `list_messages`, `list_chats`, `list_active_chats`, `get_chat`, `get_direct_chat_by_contact`, `get_contact_chats`, `get_last_interaction`, `get_message_context`, `get_group_info`, `resolve_contact`, `check_whatsapp`, `get_poll_votes`). Tools that can change state under any argument are treated as writes, so `get_group_invite_link` (its `reset` flag revokes the link) is hidden too. Every write tool, including `download_media` (it writes files to disk), is not exposed at all. Works with either transport.
 - `MCP_TRANSPORT=streamable-http` — serves MCP over HTTP instead of stdio, at `http://<MCP_HOST>:<MCP_PORT>/mcp/` (defaults `127.0.0.1` and `8000`; keep the trailing slash). `MCP_AUTH_TOKEN` is **mandatory**: the server refuses to start without it, and every request needs `Authorization: Bearer <token>` (checked in constant time, 401 otherwise).
 
 ```bash
@@ -306,6 +306,7 @@ Go WhatsApp Bridge (whatsapp-bridge/)
 | `search_contacts` | Search contacts by name or phone number (LID-aware) |
 | `list_messages` | Retrieve messages with filters, pagination, context |
 | `list_chats` | List chats with metadata |
+| `list_active_chats` | Who you talked to in a period (e.g. one day): one row per conversation with first/last time, count, last-message snippet and a link |
 | `get_chat` | Get info about a specific chat |
 | `get_direct_chat_by_contact` | Find a direct chat by phone number (LID-aware) |
 | `get_contact_chats` | All chats involving a contact |

@@ -330,6 +330,16 @@ def list_chats(
     return [_chat_from_dict(c) for c in result.get("chats", [])]
 
 
+def list_active_chats(
+    after: Optional[str] = None,
+    before: Optional[str] = None,
+    include_groups: bool = False,
+) -> List[dict]:
+    """Conversations with at least one message in the window, as the bridge returns them."""
+    result = _api_post("/chats/active", {"after": after, "before": before, "include_groups": include_groups})
+    return [] if result is None else result.get("chats", [])
+
+
 def search_contacts(query: str) -> List[Contact]:
     """Search contacts by name or phone number."""
     result = _api_post("/contacts/search", {"query": query})

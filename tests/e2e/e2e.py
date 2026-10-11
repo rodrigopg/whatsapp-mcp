@@ -13,6 +13,7 @@ import subprocess
 import time
 import unittest
 import uuid
+from datetime import datetime, timedelta, timezone
 
 import requests
 
@@ -36,7 +37,7 @@ MODE = os.environ.get("E2E_MODE") or ENV.get("E2E_MODE", "docker")  # "native": 
 SEND_GAP = 2  # seconds between sends: keep the automation footprint small
 
 MCP_READ_TOOLS = {
-    "search_contacts", "list_messages", "list_chats", "get_chat", "get_direct_chat_by_contact",
+    "search_contacts", "list_messages", "list_chats", "list_active_chats", "get_chat", "get_direct_chat_by_contact",
     "get_contact_chats", "get_last_interaction", "get_message_context", "get_group_info",
     "resolve_contact", "check_whatsapp", "get_poll_votes",
 }
@@ -58,6 +59,7 @@ MCP_TOOLS = {
     "get_poll_votes",
     "join_group_with_link",
     "leave_group",
+    "list_active_chats",
     "list_chats",
     "list_messages",
     "mark_chat_as_read",
@@ -314,6 +316,13 @@ class E2E(unittest.TestCase):
         jids = [c["jid"] for c in d["chats"]]
         self.assertIn(chat_a, jids)
         self.assertFalse([j for j in jids if j.endswith("@lid")], "LID chats were not migrated to phone JIDs")
+        now = datetime.now(timezone.utc).astimezone()
+        code, d = post("a", "/chats/active", {"after": (now - timedelta(hours=6)).isoformat(), "before": (now + timedelta(hours=1)).isoformat()})
+        self.assertEqual(code, 200, d)
+        row = next((c for c in d["chats"] if c["jid"] == chat_a), None)
+        self.assertTrue(row, "chats/active did not list the A<->B chat")
+        self.assertTrue(row["snippet"] and row["message_count"] >= 1, row)
+        self.assertEqual(row["link"], f"https://wa.me/{chat_a.split('@')[0]}")
         code, d = post("a", "/chat", {"chat_jid": chat_a, "include_last_message": False})
         self.assertEqual((code, d["chat"]["jid"]), (200, chat_a))
         code, d = post("a", "/chat/by_contact", {"sender_phone_number": PHONE["b"]})

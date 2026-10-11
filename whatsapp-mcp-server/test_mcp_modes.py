@@ -14,7 +14,7 @@ from starlette.testclient import TestClient
 HERE = os.path.dirname(os.path.abspath(__file__))
 
 READ_TOOLS = {
-    "search_contacts", "list_messages", "list_chats", "get_chat", "get_direct_chat_by_contact",
+    "search_contacts", "list_messages", "list_chats", "list_active_chats", "get_chat", "get_direct_chat_by_contact",
     "get_contact_chats", "get_last_interaction", "get_message_context", "get_group_info",
     "resolve_contact", "check_whatsapp", "get_poll_votes",
 }
