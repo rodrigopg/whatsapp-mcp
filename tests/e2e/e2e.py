@@ -69,6 +69,7 @@ MCP_TOOLS = {
     "search_contacts",
     "send_audio_message",
     "send_chat_presence",
+    "send_contact",
     "send_file",
     "send_message",
     "update_group_participants",
@@ -220,6 +221,15 @@ class E2E(unittest.TestCase):
         self.assertTrue(sent, "A did not store its own message")
         self.assertTrue(got, "B did not receive the message")
         self.state.update(a_msg=sent, b_msg=got, a_chat_b=sent["chat_jid"], b_chat_a=got["chat_jid"], text=text)
+
+    def test_04b_send_contact_card(self):
+        # B's bridge drops messages with no text or media, so only the sender side is observable.
+        code, d = post("a", "/send_contact", {"recipient": PHONE["b"], "name": f"{TAG} Card", "phone_number": "+55 62 99999-8888"})
+        self.assertEqual((code, d.get("success")), (200, True), d)
+        self.assertTrue(eventually(lambda: find_msg("a", f"[contact] {TAG} Card +5562999998888", from_me=True), timeout=20),
+                        "A did not store its own contact card")
+        code, d = post("a", "/send_contact", {"recipient": PHONE["b"], "name": "x", "phone_number": "abc"})
+        self.assertEqual(code, 400, d)
 
     def test_05_send_text_b_to_a(self):
         text = f"{TAG} hello from B"

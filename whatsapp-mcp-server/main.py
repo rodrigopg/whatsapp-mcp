@@ -26,6 +26,7 @@ from whatsapp import (
     resolve_contact as whatsapp_resolve_contact,
     react_to_message as whatsapp_react_to_message,
     create_poll as whatsapp_create_poll,
+    send_contact as whatsapp_send_contact,
     get_poll_votes as whatsapp_get_poll_votes,
     edit_message as whatsapp_edit_message,
     delete_message as whatsapp_delete_message,
@@ -436,6 +437,19 @@ def create_poll(
         selectable_count: How many options a voter may pick (1 to len(options), default 1)
     """
     success, message = whatsapp_create_poll(chat_jid, question, options, selectable_count)
+    return {"success": success, "message": message}
+
+
+@write_tool
+def send_contact(recipient: str, name: str, phone_number: str) -> Dict[str, Any]:
+    """Send a contact as a native WhatsApp contact card (the receiver saves it with one tap).
+
+    Args:
+        recipient: Who receives the card: a phone number with country code (no + or symbols) or a JID
+        name: Display name of the contact being shared
+        phone_number: Phone of the contact being shared, with country code (e.g. 5562999998888)
+    """
+    success, message = whatsapp_send_contact(recipient, name, phone_number)
     return {"success": success, "message": message}
 
 

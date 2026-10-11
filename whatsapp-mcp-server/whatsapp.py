@@ -748,6 +748,24 @@ def create_poll(chat_jid: str, question: str, options: List[str], selectable_cou
         return False, f"Request error: {str(e)}"
 
 
+def send_contact(recipient: str, name: str, phone_number: str) -> Tuple[bool, str]:
+    """Send a native contact card. The bridge validates the phone and builds the vCard."""
+    try:
+        if not recipient or not recipient.strip():
+            return False, "recipient is required"
+        response = _api_request("POST", "/send_contact",
+                                json={"recipient": recipient, "name": name, "phone_number": phone_number})
+        try:
+            result = response.json()
+        except json.JSONDecodeError:
+            return False, f"Error parsing response: {response.text}"
+        if result.get("success"):
+            return True, f"Contact sent (message_id: {result.get('message_id', '')})"
+        return False, result.get("error") or result.get("message", "Unknown response")
+    except requests.RequestException as e:
+        return False, f"Request error: {str(e)}"
+
+
 def get_poll_votes(chat_jid: str, message_id: str) -> Tuple[bool, str, Optional[dict]]:
     try:
         if not chat_jid or not chat_jid.strip():
