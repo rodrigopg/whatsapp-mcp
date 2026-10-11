@@ -84,6 +84,18 @@ The backfill/recovery scripts are separate processes that read the engine vars f
 - **`python3 transcribe.py`** — backfill existing audios that are still downloadable.
 - **`python3 recover_audios.py`** — for audios that expired from WhatsApp's CDN (shown as `[áudio indisponível…]`); requires your **phone online**. This one scrapes the bridge's log to confirm each re-upload, so the bridge must be logging to a *file* and `WHATSAPP_BRIDGE_LOG` must point at it (a foreground `go run main.go` logs to the terminal, not a file). With the `install.sh` launchd setup the log is at `~/.whatsapp-mcp/bridge.log`, so run `WHATSAPP_BRIDGE_LOG=~/.whatsapp-mcp/bridge.log python3 recover_audios.py`.
 
+### Open matters, favorites and the morning summary
+
+For people who lose track of what they promised and who is waiting for an answer. Three Claude Code commands built on the tools below:
+
+- `/whats:triage` reviews the new messages and keeps a list of **open matters**: requests and chasers addressed to you, promises (yours or someone else's) and agreed events. A matter is closed only by a *later message from the other person* confirming it, or by you: silence, your own reply and a courtesy "ok"/"vou ver" never close anything. Matters expire one month after they arose; a closed one reopens if the conversation returns to it. In groups only messages that @-mention you count.
+- `/whats:favorites` suggests your favorites from last month's two-way conversations (at least 3 messages each way, one-to-one chats only) and records only what you accept; it also mirrors the WhatsApp Favorites list when WhatsApp syncs it.
+- `/whats:morning` runs the review and shows **one summary a day**: only what needs your action, favorites first, then who chased you or what you promised, then the rest (10 items plus a "more N" count; the summary is stored as a photograph that does not change that day). It also writes **chase drafts** for matters other people owe you: nothing is ever sent until you approve a specific draft, and then exactly the text you approved goes out, once. It explains how to run itself every morning (`/schedule` or `/loop`) but never creates the schedule itself.
+
+How it stays private: the AI client you already use (Claude Code) is the one that reads the messages and recognizes requests and promises; the bridge only stores the state and applies fixed rules (one-month validity, when something needs attention, never closing by silence). No extra service is called and nothing is sent without your approval. Write tools are hidden under `MCP_READONLY`.
+
+Also new: `list_active_chats` ("who did I talk to on that day?", one row per conversation with a snippet and a link) and `send_contact` (a native contact card).
+
 ### Configuration
 - `WHATSAPP_BRIDGE_PORT` env var — change the REST API port (default `8080`)
 - `WHATSAPP_API_BASE_URL` env var — point the Python MCP server at a non-default bridge URL

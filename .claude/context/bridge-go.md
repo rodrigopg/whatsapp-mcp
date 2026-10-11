@@ -54,3 +54,15 @@ Bridge Go (`whatsapp-bridge/main.go`) — conecta ao WhatsApp via whatsmeow, exp
 ## Testes
 
 - `main_test.go` — `TestSafeMediaPath` (traversal + colisão de filename). `go test ./...`.
+
+## Open matters, favorites, summary, drafts (stage 4)
+
+Additive tables created in `NewMessageStore` (each feature owns its schema string): `matters` + `matter_events` + `review_cursor` (matters.go), `favorites` (favorites.go), `summaries` (summary.go), `drafts` (drafts.go), `message_mentions` (mentions.go). Each file has its `_test.go` and registers its routes from main.go with one line (`registerMatterRoutes`, `registerFavoriteRoutes`, `registerSummaryRoute`, `registerDraftRoutes`); handlers use the generic `matterRoute`.
+
+- Matter state is **derived** (`matterState`): open, closed_confirmed, closed_owner, expired (one month after it arose or was reopened). No background job. `needsAttention` holds the "when does it ask for attention" table; the day is read in the zone of `as_of` (the bridge never decides a timezone).
+- Windows compare **instants** with `julianday(...)`, never timestamp strings: `messages.timestamp` keeps whatever offset it was written with.
+- Rules the code enforces: the owner's own messages never close a matter; groups only with the owner's @mention (`checkTrackedChat`, `mentionsOwner`, owner = phone and LID); status/newsletters/own chat never tracked; closing needs a message newer than the matter.
+- `approveDraft` is the **only** path that sends a chase: it claims the draft (`written` -> `sending`) before `sendWhatsAppMessage` and sends exactly the text it receives. The "only after the owner decided" guard is prompt-level (docstring + `/whats:morning`); the server cannot prove a human saw the text. A failed send puts the draft back to pending.
+- The summary is a stored photograph per day (`summaries`); announcing a closure clears `announce_pending`.
+- WhatsApp Favorites are mirrored from `events.AppState` (index `favorites`); `EmitAppStateEventsOnFullSync` is off, so a list that existed before pairing is picked up on its next change.
+- Local checks run in a Go container (no Go on the Mac): mount the repo, `go vet ./... && go test ./...`; `gofmt` also rewrites `webhook.go` (known nit), do not commit that.
