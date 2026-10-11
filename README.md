@@ -136,7 +136,7 @@ network (Tailscale, WireGuard, SSH tunnel) plus the token is the recommended set
 
 **Read-only and remote MCP (opt-in).** Both are off by default; stdio installs behave exactly as before.
 
-- `MCP_READONLY=true` — registers only the read tools (`search_contacts`, `list_messages`, `list_chats`, `list_active_chats`, `list_matters`, `review_next_messages`, `get_chat`, `get_direct_chat_by_contact`, `get_contact_chats`, `get_last_interaction`, `get_message_context`, `get_group_info`, `resolve_contact`, `check_whatsapp`, `get_poll_votes`). Tools that can change state under any argument are treated as writes, so `get_group_invite_link` (its `reset` flag revokes the link) is hidden too. Every write tool, including `download_media` (it writes files to disk), is not exposed at all. Works with either transport.
+- `MCP_READONLY=true` — registers only the read tools (`search_contacts`, `list_messages`, `list_chats`, `list_active_chats`, `list_matters`, `review_next_messages`, `suggest_favorites`, `list_favorites`, `get_chat`, `get_direct_chat_by_contact`, `get_contact_chats`, `get_last_interaction`, `get_message_context`, `get_group_info`, `resolve_contact`, `check_whatsapp`, `get_poll_votes`). Tools that can change state under any argument are treated as writes, so `get_group_invite_link` (its `reset` flag revokes the link) is hidden too. Every write tool, including `download_media` (it writes files to disk), is not exposed at all. Works with either transport.
 - `MCP_TRANSPORT=streamable-http` — serves MCP over HTTP instead of stdio, at `http://<MCP_HOST>:<MCP_PORT>/mcp/` (defaults `127.0.0.1` and `8000`; keep the trailing slash). `MCP_AUTH_TOKEN` is **mandatory**: the server refuses to start without it, and every request needs `Authorization: Bearer <token>` (checked in constant time, 401 otherwise).
 
 ```bash
@@ -306,6 +306,9 @@ Go WhatsApp Bridge (whatsapp-bridge/)
 | `search_contacts` | Search contacts by name or phone number (LID-aware) |
 | `list_messages` | Retrieve messages with filters, pagination, context |
 | `list_chats` | List chats with metadata |
+| `suggest_favorites` | Suggest favorites from last month's two-way conversations; only proposes |
+| `list_favorites` | The favorites: WhatsApp's Favorites list plus the suggestions you accepted |
+| `decide_favorite` | Record your decision for one contact: accept, reject or remove |
 | `list_matters` | Open matters (pending requests and commitments) with state, proof and why they need attention on a day |
 | `review_next_messages` | Messages not reviewed yet, with the open matters of those chats; never moves the cursor |
 | `record_matter` | Record a matter citing the message that proves it (or add a mention to an existing one) |

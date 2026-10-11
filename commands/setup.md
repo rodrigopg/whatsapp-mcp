@@ -136,3 +136,7 @@ cd "<INSTALL_DIR>/whatsapp-mcp-server" && \
 If this bridge's `BIND_ADDR` is non-loopback (`API_AUTH_TOKEN` required — see the REST API section above), also export `WHATSAPP_API_AUTH_TOKEN=<that same token>` before running the command above, or the download call 401s.
 
 Report how many audios were transcribed when it finishes. If skipped, mention the same command for later.
+
+## 7. Favorites (optional)
+
+Offer to run `/whats:favorites`: it suggests the contacts the user talks to most (both ways, last month) so they can pick their favorites, which then come first in summaries. Only names the user accepts are recorded. Skip silently if the user declines.

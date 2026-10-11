@@ -40,6 +40,7 @@ MCP_READ_TOOLS = {
     "search_contacts", "list_messages", "list_chats", "list_active_chats", "get_chat", "get_direct_chat_by_contact",
     "get_contact_chats", "get_last_interaction", "get_message_context", "get_group_info",
     "resolve_contact", "check_whatsapp", "get_poll_votes", "list_matters", "review_next_messages",
+    "suggest_favorites", "list_favorites",
 }
 MCP_TOOLS = {
     "archive_chat",
@@ -47,6 +48,7 @@ MCP_TOOLS = {
     "close_matter",
     "create_group",
     "create_poll",
+    "decide_favorite",
     "delete_message",
     "download_media",
     "edit_message",
@@ -62,6 +64,7 @@ MCP_TOOLS = {
     "leave_group",
     "list_active_chats",
     "list_chats",
+    "list_favorites",
     "list_matters",
     "list_messages",
     "mark_chat_as_read",
@@ -78,6 +81,7 @@ MCP_TOOLS = {
     "send_contact",
     "send_file",
     "send_message",
+    "suggest_favorites",
     "update_group_participants",
     "update_group_settings",
 }
@@ -242,6 +246,29 @@ class E2E(unittest.TestCase):
         code, d = send("b", PHONE["a"], text)
         self.assertEqual((code, d.get("success")), (200, True), d)
         self.assertTrue(eventually(lambda: find_msg("a", text, from_me=False)), "A did not receive the message")
+
+    # ---- 05b open matters + favorites routes -----------------------------------------
+    def test_05b_matters_and_favorites(self):
+        chat, mine = self.need("a_chat_b"), self.need("a_msg")
+        reply = find_msg("a", f"{TAG} hello from B", from_me=False)
+        self.assertTrue(reply, "A did not store B's reply")
+        now = datetime.now(timezone.utc).astimezone()
+        code, m = post("a", "/matters/record", {"chat_jid": chat, "message_id": mine["id"], "owed_by": "owner", "origin": "promise",
+                                                "deadline": (now + timedelta(days=1)).date().isoformat()})
+        self.assertEqual((code, m.get("state")), (200, "open"), m)
+        code, d = post("a", "/matters/list", {"as_of": (now + timedelta(days=2)).isoformat(), "attention_only": True})
+        self.assertIn((m["id"], "own_promise_deadline"), [(x["id"], x["reason"]) for x in d["matters"]])
+        code, d = post("a", "/matters/close", {"matter_id": m["id"], "by": "confirmed", "message_id": mine["id"]})
+        self.assertEqual(code, 400, "the owner's own message must never close a matter")
+        code, d = post("a", "/matters/close", {"matter_id": m["id"], "by": "confirmed", "message_id": reply["id"]})
+        self.assertEqual((code, d.get("state"), d.get("announce_pending")), (200, "closed_confirmed", True), d)
+        code, d = post("a", "/review/next", {"limit": 5})
+        self.assertEqual(code, 200, d)
+        self.assertIn("next_cursor", d)
+        for path, key in (("/favorites/list", "favorites"), ("/favorites/suggest", "suggestions")):
+            code, d = post("a", path, {})
+            self.assertEqual(code, 200, d)
+            self.assertIn(key, d)
 
     # ---- 06 actions on a message ---------------------------------------------
     def test_06_react(self):

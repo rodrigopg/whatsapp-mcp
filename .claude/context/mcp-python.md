@@ -26,7 +26,7 @@ compartilhar filesystem.
 
 ## Tools expostas
 
-search_contacts, list_messages, list_chats, list_active_chats, list_matters, review_next_messages, record_matter, close_matter, reopen_matter, mark_reviewed, get_chat, get_direct_chat_by_contact, get_contact_chats, get_last_interaction, get_message_context, send_message, send_contact, send_file, send_audio_message, download_media, create_group, leave_group.
+search_contacts, list_messages, list_chats, list_active_chats, list_matters, review_next_messages, suggest_favorites, list_favorites, decide_favorite, record_matter, close_matter, reopen_matter, mark_reviewed, get_chat, get_direct_chat_by_contact, get_contact_chats, get_last_interaction, get_message_context, send_message, send_contact, send_file, send_audio_message, download_media, create_group, leave_group.
 
 ## Endpoint da bridge + auth
 

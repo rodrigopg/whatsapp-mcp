@@ -207,15 +207,15 @@ func oneOf(v string, set ...string) bool {
 	return false
 }
 
-// eligibleMatterChat: only one-to-one chats count, never the owner's own chat
+// checkIndividualChat: only one-to-one chats count, never the owner's own chat
 // (groups need the owner's @mention, which the bridge does not store yet).
-func eligibleMatterChat(jid string, selfUsers []string) error {
+func checkIndividualChat(jid string, selfUsers []string) error {
 	if !strings.HasSuffix(jid, "@s.whatsapp.net") && !strings.HasSuffix(jid, "@lid") {
-		return invalid("chat %s is not an individual chat: groups, status and newsletters are not tracked", jid)
+		return invalid("chat %s is not an individual chat: groups, status and newsletters are not supported", jid)
 	}
 	for _, u := range selfUsers {
 		if jidUser(jid) == u {
-			return invalid("the owner's own chat is never tracked")
+			return invalid("the owner's own chat is not supported")
 		}
 	}
 	return nil
@@ -317,7 +317,7 @@ func recordMatter(db *sql.DB, req RecordMatterRequest, selfUsers []string, now t
 			return APIMatter{}, invalid("deadline must be a date YYYY-MM-DD")
 		}
 	}
-	if err := eligibleMatterChat(req.ChatJID, selfUsers); err != nil {
+	if err := checkIndividualChat(req.ChatJID, selfUsers); err != nil {
 		return APIMatter{}, err
 	}
 	content, ts, _, err := loadMessage(db, req.ChatJID, req.MessageID)

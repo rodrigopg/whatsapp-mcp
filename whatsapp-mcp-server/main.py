@@ -559,6 +559,39 @@ def mark_reviewed(up_to: str) -> Dict[str, Any]:
 
 
 @read_tool
+def suggest_favorites(limit: int = 10) -> Dict[str, Any]:
+    """Suggest favorites from the last month of conversations: one-to-one chats with real two-way
+    traffic (at least 3 messages each way), most active first, with how many came from each side.
+    Never suggests groups, the user's own chat, current favorites or contacts the user already
+    rejected. This only proposes: nothing becomes a favorite until the user decides each name with
+    decide_favorite. Show the rows as a table.
+
+    Args:
+        limit: Maximum number of suggestions (default 10)
+    """
+    return whatsapp_matter_call("/favorites/suggest", {"limit": limit})
+
+
+@read_tool
+def list_favorites() -> Dict[str, Any]:
+    """List the user's favorites: the WhatsApp Favorites list (source whatsapp) plus the
+    suggestions the user accepted (source owner). An empty list is normal."""
+    return whatsapp_matter_call("/favorites/list", {})
+
+
+@write_tool
+def decide_favorite(chat_jid: str, decision: str) -> Dict[str, Any]:
+    """Record the user's decision about one contact. Only call it with a decision the user gave
+    for that contact; never decide for them.
+
+    Args:
+        chat_jid: The one-to-one chat of the contact
+        decision: accept (becomes a favorite), reject (never suggested again) or remove (forget the decision)
+    """
+    return whatsapp_matter_call("/favorites/decide", {"chat_jid": chat_jid, "decision": decision})
+
+
+@read_tool
 def get_poll_votes(chat_jid: str, message_id: str) -> Dict[str, Any]:
     """Read the recorded votes of a poll.
 

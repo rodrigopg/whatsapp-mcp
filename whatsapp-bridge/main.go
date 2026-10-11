@@ -114,7 +114,7 @@ func NewMessageStore() (*MessageStore, error) {
 			updated_at TIMESTAMP
 		);
 		CREATE INDEX IF NOT EXISTS idx_senders_names ON senders(full_name, push_name);
-	` + pollSchema + matterSchema)
+	` + pollSchema + matterSchema + favoritesSchema)
 	if err != nil {
 		db.Close()
 		return nil, fmt.Errorf("failed to create tables: %v", err)
@@ -2461,19 +2461,7 @@ func listActiveChats(db *sql.DB, req ActiveChatsRequest, selfUsers []string, toP
 			if toPN != nil && strings.HasSuffix(jid, "@lid") {
 				pn = toPN(jid)
 			}
-			c.Name = chatName.String
-			if strings.TrimSpace(c.Name) == "" || isDigits(c.Name) {
-				c.Name = ""
-				for _, n := range []string{fullName.String, pushName.String} {
-					if strings.TrimSpace(n) != "" {
-						c.Name = n
-						break
-					}
-				}
-				if c.Name == "" {
-					c.Name = jidUser(pn)
-				}
-			}
+			c.Name = displayName(chatName.String, fullName.String, pushName.String, jidUser(pn))
 			if !c.IsGroup && strings.HasSuffix(pn, "@s.whatsapp.net") {
 				link := "https://wa.me/" + jidUser(pn)
 				c.Link = &link
@@ -3737,6 +3725,7 @@ img{border:8px solid white;border-radius:8px;box-shadow:0 4px 20px rgba(0,0,0,.2
 	http.HandleFunc("/api/poll", handlePoll(client, messageStore))
 	http.HandleFunc("/api/send_contact", handleSendContact(client, messageStore))
 	registerMatterRoutes(messageStore.db, client)
+	registerFavoriteRoutes(messageStore.db, client)
 	http.HandleFunc("/api/poll_votes", handlePollVotes(messageStore))
 
 	// Handler for sending a typing/recording indicator to a chat.
@@ -3929,6 +3918,13 @@ func main() {
 
 		case *events.LoggedOut:
 			logger.Warnf("Device logged out, please scan QR code to log in again")
+
+		case *events.AppState:
+			if jids, ok := favoritesFromAppState(v); ok {
+				if err := mirrorWhatsAppFavorites(messageStore.db, jids, time.Now()); err != nil {
+					logger.Warnf("Failed to mirror WhatsApp favorites: %v", err)
+				}
+			}
 		}
 	})
 
