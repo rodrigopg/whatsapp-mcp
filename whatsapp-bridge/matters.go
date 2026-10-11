@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"go.mau.fi/whatsmeow"
+	"go.mau.fi/whatsmeow/types"
 )
 
 // Additive tables for open matters (pending requests and commitments found in
@@ -462,6 +463,28 @@ func reopenMatter(db *sql.DB, req ReopenMatterRequest, now time.Time) (APIMatter
 	return apiMatter(db, m, now)
 }
 
+// loadMatters returns every matter (of one chat when chat is set), oldest first.
+func loadMatters(db *sql.DB, chat string) ([]Matter, error) {
+	q, args := `SELECT `+matterCols+` FROM matters`, []interface{}{}
+	if chat != "" {
+		q, args = q+` WHERE chat_jid = ?`, append(args, chat)
+	}
+	rows, err := db.Query(q+` ORDER BY julianday(created_at), id`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var all []Matter
+	for rows.Next() {
+		m, err := scanMatter(rows)
+		if err != nil {
+			return nil, err
+		}
+		all = append(all, m)
+	}
+	return all, rows.Err()
+}
+
 // listMatters returns matters with their derived state as of req.AsOf (an
 // instant with offset: it also fixes the zone the "day" is read in).
 func listMatters(db *sql.DB, req ListMattersRequest) ([]APIMatter, error) {
@@ -469,24 +492,10 @@ func listMatters(db *sql.DB, req ListMattersRequest) ([]APIMatter, error) {
 	if err != nil {
 		return nil, invalid("as_of is required: an ISO-8601 instant with offset, e.g. 2026-10-12T07:00:00-03:00")
 	}
-	q, args := `SELECT `+matterCols+` FROM matters`, []interface{}{}
-	if req.ChatJID != "" {
-		q, args = q+` WHERE chat_jid = ?`, append(args, req.ChatJID)
-	}
-	rows, err := db.Query(q+` ORDER BY julianday(created_at), id`, args...)
+	all, err := loadMatters(db, req.ChatJID)
 	if err != nil {
 		return nil, err
 	}
-	var all []Matter
-	for rows.Next() {
-		m, err := scanMatter(rows)
-		if err != nil {
-			rows.Close()
-			return nil, err
-		}
-		all = append(all, m)
-	}
-	rows.Close()
 	out := []APIMatter{}
 	for _, m := range all {
 		state := matterState(m, asOf)
@@ -606,6 +615,26 @@ func ownUsers(client *whatsmeow.Client) []string {
 		}
 	}
 	return self
+}
+
+// lidToPN maps a LID jid to its phone jid through the whatsmeow store (as is when unknown).
+func lidToPN(client *whatsmeow.Client) func(string) string {
+	return func(jid string) string {
+		parsed, err := types.ParseJID(jid)
+		if err != nil {
+			return jid
+		}
+		return resolveToPN(client, parsed).String()
+	}
+}
+
+// waLink opens the chat with a phone jid; nil when there is no phone to open.
+func waLink(pn string) *string {
+	if !strings.HasSuffix(pn, "@s.whatsapp.net") {
+		return nil
+	}
+	link := "https://wa.me/" + jidUser(pn)
+	return &link
 }
 
 func matterRoute[Req, Resp any](fn func(Req) (Resp, error)) http.HandlerFunc {

@@ -591,6 +591,25 @@ def decide_favorite(chat_jid: str, decision: str) -> Dict[str, Any]:
     return whatsapp_matter_call("/favorites/decide", {"chat_jid": chat_jid, "decision": decision})
 
 
+@write_tool
+def morning_summary(as_of: str, all: bool = False) -> Dict[str, Any]:
+    """Get the user's summary for a day: only what needs their action, favorites first, then who
+    chased them or what they promised, then the rest, most recent first. The first call of a day
+    builds and stores it (a photograph that never changes that day) and marks the matter closures
+    it reports as told; later calls return the same summary. At most 10 items come back with
+    `more` counting the rest, which are never dropped. Each item has name, time, snippet, link
+    (null when there is none), reason, certainty (mark uncertain ones), owed_by, origin, deadline
+    and group. `announcements` are matters closed by the other person's confirmation that the user
+    has not been told about: show them as "closed because X confirmed", with a way to reopen
+    (reopen_matter). Show a table, never running text. Never sends anything.
+
+    Args:
+        as_of: ISO-8601 instant WITH the user's UTC offset, e.g. 2026-10-12T07:00:00-03:00 (fixes the day)
+        all: Return every item of the day's summary instead of the first 10
+    """
+    return whatsapp_matter_call("/summary", {"as_of": as_of, "all": all})
+
+
 @read_tool
 def get_poll_votes(chat_jid: str, message_id: str) -> Dict[str, Any]:
     """Read the recorded votes of a poll.

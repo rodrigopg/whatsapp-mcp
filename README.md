@@ -309,6 +309,7 @@ Go WhatsApp Bridge (whatsapp-bridge/)
 | `suggest_favorites` | Suggest favorites from last month's two-way conversations; only proposes |
 | `list_favorites` | The favorites: WhatsApp's Favorites list plus the suggestions you accepted |
 | `decide_favorite` | Record your decision for one contact: accept, reject or remove |
+| `morning_summary` | The day's summary: only what needs your action, favorites first, max 10 plus a "more N" count; one photograph per day |
 | `list_matters` | Open matters (pending requests and commitments) with state, proof and why they need attention on a day |
 | `review_next_messages` | Messages not reviewed yet, with the open matters of those chats; never moves the cursor |
 | `record_matter` | Record a matter citing the message that proves it (or add a mention to an existing one) |

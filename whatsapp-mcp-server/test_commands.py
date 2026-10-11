@@ -7,8 +7,9 @@ CMD_DIR = os.path.join(os.path.dirname(__file__), "..", "commands")
 COMMANDS = {
     "triage.md": ("review_next_messages", "record_matter", "close_matter", "reopen_matter", "mark_reviewed"),
     "favorites.md": ("list_favorites", "suggest_favorites", "decide_favorite"),
+    "morning.md": ("review_next_messages", "mark_reviewed", "morning_summary", "reopen_matter"),
 }
-FIELDS = {"is_from_me", "next_cursor", "matter_id", "owed_by", "open_matters"}
+FIELDS = {"is_from_me", "next_cursor", "matter_id", "owed_by", "open_matters", "as_of"}
 
 
 def read(name):
@@ -39,6 +40,9 @@ class TestCommands(unittest.TestCase):
             self.assertIn(rule, triage)
         for rule in ("only propose", "Do not decide for the user"):
             self.assertIn(rule, fav)
+        morning = read("morning.md")
+        for rule in ("Do not create a schedule yourself", "all: true", "uncertain"):
+            self.assertIn(rule, morning)
         self.assertIn("/whats:favorites", read("setup.md"))
 
 

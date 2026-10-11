@@ -70,6 +70,7 @@ MCP_TOOLS = {
     "mark_chat_as_read",
     "mark_chat_as_unread",
     "mark_reviewed",
+    "morning_summary",
     "react_to_message",
     "record_matter",
     "reopen_matter",
@@ -265,6 +266,9 @@ class E2E(unittest.TestCase):
         code, d = post("a", "/review/next", {"limit": 5})
         self.assertEqual(code, 200, d)
         self.assertIn("next_cursor", d)
+        code, d = post("a", "/summary", {"as_of": now.isoformat()})
+        self.assertEqual(code, 200, d)
+        self.assertEqual((d["day"], d["total"] >= 0, "announcements" in d), (now.date().isoformat(), True, True))
         for path, key in (("/favorites/list", "favorites"), ("/favorites/suggest", "suggestions")):
             code, d = post("a", path, {})
             self.assertEqual(code, 200, d)
