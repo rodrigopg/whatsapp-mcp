@@ -7,6 +7,7 @@ import os
 import requests
 import json
 import audio
+import tts
 
 # This server runs over MCP's stdio transport, where stdout carries JSON-RPC
 # framing — a stray print() either corrupts that stream or is silently
@@ -529,6 +530,38 @@ def send_audio_message(recipient: str, media_path: str) -> Tuple[bool, str]:
         return False, f"Error parsing response: {response.text}"
     except Exception as e:
         return False, f"Unexpected error: {str(e)}"
+
+def send_voice_message(recipient: str, text: str, notice: str = "") -> Tuple[bool, str]:
+    """Synthesize text to speech and send it as a WhatsApp voice message.
+
+    If notice is given, it is sent as a text message right before the audio, only after the
+    speech was generated (so the two arrive together); if it fails, the audio is not sent.
+    """
+    if not recipient:
+        return False, "Recipient must be provided"
+    if not text or not text.strip():
+        return False, "Text must be provided"
+
+    ready, reason = tts.engine_ready()
+    if not ready:
+        return False, reason
+
+    try:
+        ogg_path = tts.synthesize(text)
+    except tts.TTSError as e:
+        return False, f"Text-to-speech failed: {e}"
+
+    try:
+        if notice:
+            sent, reason = send_message(recipient, notice)
+            if not sent:
+                return False, f"Notice not sent, voice message skipped: {reason}"
+        return send_audio_message(recipient, ogg_path)
+    finally:
+        try:
+            os.remove(ogg_path)
+        except OSError:
+            pass
 
 def download_media(message_id: str, chat_jid: str) -> Optional[str]:
     """Download media from a message and return the local file path.

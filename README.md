@@ -84,6 +84,29 @@ The backfill/recovery scripts are separate processes that read the engine vars f
 - **`python3 transcribe.py`** — backfill existing audios that are still downloadable.
 - **`python3 recover_audios.py`** — for audios that expired from WhatsApp's CDN (shown as `[áudio indisponível…]`); requires your **phone online**. This one scrapes the bridge's log to confirm each re-upload, so the bridge must be logging to a *file* and `WHATSAPP_BRIDGE_LOG` must point at it (a foreground `go run main.go` logs to the terminal, not a file). With the `install.sh` launchd setup the log is at `~/.whatsapp-mcp/bridge.log`, so run `WHATSAPP_BRIDGE_LOG=~/.whatsapp-mcp/bridge.log python3 recover_audios.py`.
 
+### Voice messages from text (opt-in)
+`send_voice_message(recipient, text, notice="")` turns text into speech and sends it as a WhatsApp voice message through the same path as `send_audio_message`. It is off until you configure an engine: with `TTS_ENGINE` unset, the tool returns a "TTS not configured" error and nothing is generated or sent. Text over 4096 characters (`MAX_TTS_CHARS`) is refused, never truncated. Either engine needs `ffmpeg` (the audio is converted to Opus Ogg and the temporary file is deleted after sending). Set these in the environment of the MCP server process.
+
+The optional `notice` is a text message sent right before the voice note, and only after the speech was generated, so the two arrive together instead of the text waiting on synthesis. If generation fails nothing is sent; if the notice cannot be sent, the voice note is not sent and the reason is returned.
+
+- **Local** — no API cost, nothing leaves your machine. Point `TTS_CLI` at a program that reads the text on stdin and writes a WAV to `--output_file` (the shape of the [piper](https://github.com/OHF-Voice/piper1-gpl) CLI), and `TTS_MODEL` at the voice model:
+  ```sh
+  export TTS_ENGINE=local
+  export TTS_CLI=/path/to/piper
+  export TTS_MODEL=/path/to/pt_BR-cadu-medium.onnx
+  ```
+- **API (any OpenAI-compatible `/audio/speech` endpoint)** — audio is generated remotely:
+  ```sh
+  export TTS_ENGINE=api
+  export TTS_API_KEY=sk-...
+  # optional, defaults shown:
+  #   TTS_API_BASE=https://api.openai.com/v1
+  #   TTS_API_MODEL=gpt-4o-mini-tts
+  #   TTS_API_VOICE=alloy
+  ```
+
+The voice model is never part of this repo. For Brazilian Portuguese, [`rhasspy/piper-voices`](https://huggingface.co/rhasspy/piper-voices) has `pt/pt_BR` voices (cadu, used in the example above, plus faber, jeff and edresson). They are fine-tunes of the `lessac` (en_US) voice, whose dataset carries its own license (Blizzard 2013), so check the terms before using one for anything beyond personal use.
+
 ### Configuration
 - `WHATSAPP_BRIDGE_PORT` env var — change the REST API port (default `8080`)
 - `WHATSAPP_API_BASE_URL` env var — point the Python MCP server at a non-default bridge URL
@@ -315,6 +338,7 @@ Go WhatsApp Bridge (whatsapp-bridge/)
 | `send_message` | Send a text message |
 | `send_file` | Send image, video, document, or audio file |
 | `send_audio_message` | Send audio as a WhatsApp voice message |
+| `send_voice_message` | Convert text to speech and send it as a voice message, with an optional `notice` text sent just before it (opt-in, see [Voice messages from text](#voice-messages-from-text-opt-in)) |
 | `download_media` | Download media from a message, get local path |
 | `create_group` | Create a new WhatsApp group |
 | `leave_group` | Leave a group |

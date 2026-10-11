@@ -71,6 +71,7 @@ MCP_TOOLS = {
     "send_chat_presence",
     "send_file",
     "send_message",
+    "send_voice_message",
     "update_group_participants",
     "update_group_settings",
 }
