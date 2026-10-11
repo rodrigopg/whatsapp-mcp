@@ -766,6 +766,19 @@ def send_contact(recipient: str, name: str, phone_number: str) -> Tuple[bool, st
         return False, f"Request error: {str(e)}"
 
 
+def matter_call(path: str, payload: dict) -> dict:
+    """Call a matters/review route. Returns the bridge's JSON; a refusal or a failure comes back
+    as {"error": ...} so the AI client can read the reason and correct itself."""
+    try:
+        response = _api_request("POST", path, json=payload)
+        try:
+            return response.json()
+        except json.JSONDecodeError:
+            return {"error": f"Error parsing response: {response.text}"}
+    except requests.RequestException as e:
+        return {"error": f"Request error: {str(e)}"}
+
+
 def get_poll_votes(chat_jid: str, message_id: str) -> Tuple[bool, str, Optional[dict]]:
     try:
         if not chat_jid or not chat_jid.strip():

@@ -27,6 +27,7 @@ from whatsapp import (
     react_to_message as whatsapp_react_to_message,
     create_poll as whatsapp_create_poll,
     send_contact as whatsapp_send_contact,
+    matter_call as whatsapp_matter_call,
     get_poll_votes as whatsapp_get_poll_votes,
     edit_message as whatsapp_edit_message,
     delete_message as whatsapp_delete_message,
@@ -451,6 +452,110 @@ def send_contact(recipient: str, name: str, phone_number: str) -> Dict[str, Any]
     """
     success, message = whatsapp_send_contact(recipient, name, phone_number)
     return {"success": success, "message": message}
+
+
+@read_tool
+def list_matters(
+    as_of: str,
+    state: Optional[str] = None,
+    chat_jid: Optional[str] = None,
+    attention_only: bool = False
+) -> Dict[str, Any]:
+    """List the user's open matters: pending requests and commitments found in conversations, until
+    they are closed or expire (one month). Each has state (open, closed_confirmed, closed_owner,
+    expired), the proof (snippet and message id), certainty, announce_pending, mentions and its
+    history. With attention_only, only the matters that need the user's attention that day, each
+    with a reason (next_day, own_promise_created_today, own_promise_deadline, other_deadline).
+    Show the rows as a table, never as running text.
+
+    Args:
+        as_of: ISO-8601 instant WITH the user's UTC offset (e.g. 2026-10-12T07:00:00-03:00); it fixes
+            the day and the timezone the rules are read in
+        state: Optional filter: open, closed (either kind) or expired
+        chat_jid: Optional chat to restrict to
+        attention_only: Only matters that need attention on the day of as_of
+    """
+    return whatsapp_matter_call("/matters/list", {
+        "as_of": as_of, "state": state or "", "chat_jid": chat_jid or "", "attention_only": attention_only})
+
+
+@read_tool
+def review_next_messages(limit: int = 100) -> Dict[str, Any]:
+    """Get the messages not reviewed yet, oldest first (one-to-one chats only, never the user's own
+    chat, at most one month old), with the open matters of those chats and next_cursor. Read them,
+    record or close matters (see /whats:triage), and only then call mark_reviewed with next_cursor.
+    This tool never moves the cursor.
+
+    Args:
+        limit: Maximum number of messages (default 100, max 500)
+    """
+    return whatsapp_matter_call("/review/next", {"limit": limit})
+
+
+@write_tool
+def record_matter(
+    chat_jid: str,
+    message_id: str,
+    owed_by: str,
+    origin: str,
+    deadline: Optional[str] = None,
+    certainty: str = "clear",
+    matter_id: Optional[int] = None
+) -> Dict[str, Any]:
+    """Record an open matter, citing the message that proves it. Recording the same message again
+    returns the same matter. Pass matter_id to add a mention to an existing open matter of the same
+    chat instead of creating another (one subject, one matter). A refusal comes back as {"error": ...}.
+
+    Args:
+        chat_jid: The one-to-one chat (groups and the user's own chat are refused)
+        message_id: The message that proves it (must exist locally and be at most one month old)
+        owed_by: Who has to act: owner (the user) or other (the other person)
+        origin: request (asked something of the user), demand (chased the user), promise (someone
+            promised to do something) or event (something agreed to happen)
+        deadline: Optional date YYYY-MM-DD (no time); for an event, the date it happens
+        certainty: clear, or uncertain when unsure it is a request/promise (it is still listed, marked)
+        matter_id: Optional existing open matter of this chat to add the mention to
+    """
+    return whatsapp_matter_call("/matters/record", {
+        "chat_jid": chat_jid, "message_id": message_id, "owed_by": owed_by, "origin": origin,
+        "deadline": deadline, "certainty": certainty, "matter_id": matter_id})
+
+
+@write_tool
+def close_matter(matter_id: int, by: str, message_id: Optional[str] = None) -> Dict[str, Any]:
+    """Close an open matter. by=confirmed needs message_id of a LATER message FROM THE OTHER PERSON
+    that confirms it was done (the user's own replies, "ok" or silence never close anything); the
+    user is told about it in the next summary. by=owner is for when the user says it is resolved.
+
+    Args:
+        matter_id: The matter to close
+        by: confirmed or owner
+        message_id: For confirmed: the other person's confirming message in that chat
+    """
+    return whatsapp_matter_call("/matters/close", {"matter_id": matter_id, "by": by, "message_id": message_id or ""})
+
+
+@write_tool
+def reopen_matter(matter_id: int, message_id: str) -> Dict[str, Any]:
+    """Reopen a closed or expired matter because the conversation returned to it: same matter,
+    history kept, one more month from now.
+
+    Args:
+        matter_id: The matter to reopen
+        message_id: A message of that chat newer than everything the matter already knows
+    """
+    return whatsapp_matter_call("/matters/reopen", {"matter_id": matter_id, "message_id": message_id})
+
+
+@write_tool
+def mark_reviewed(up_to: str) -> Dict[str, Any]:
+    """Advance the review cursor: everything up to that instant has been reviewed. It never goes
+    back. Use the next_cursor of review_next_messages after handling those messages.
+
+    Args:
+        up_to: ISO-8601 instant with offset (the next_cursor)
+    """
+    return whatsapp_matter_call("/review/mark", {"up_to": up_to})
 
 
 @read_tool
