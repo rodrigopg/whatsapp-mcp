@@ -610,6 +610,46 @@ def morning_summary(as_of: str, all: bool = False) -> Dict[str, Any]:
     return whatsapp_matter_call("/summary", {"as_of": as_of, "all": all})
 
 
+@write_tool
+def create_chase_draft(matter_id: int, text: str) -> Dict[str, Any]:
+    """Write a draft message chasing someone about a matter THEY owe (owed_by other, still open).
+    This only saves the draft: nothing is sent. A pending draft of the same matter is rewritten.
+    The user sees it in their summary and decides.
+
+    Args:
+        matter_id: The open matter the other person owes
+        text: The message, short and friendly, in the language and tone of that chat (max 1000 characters)
+    """
+    return whatsapp_matter_call("/drafts/create", {"matter_id": matter_id, "text": text})
+
+
+@read_tool
+def list_chase_drafts(state: Optional[str] = None) -> Dict[str, Any]:
+    """List chase drafts. state: written (pending, waiting for the user), sent or discarded; empty for all."""
+    return whatsapp_matter_call("/drafts/list", {"state": state or ""})
+
+
+@write_tool
+def approve_chase_draft(draft_id: int, text: str) -> Dict[str, Any]:
+    """SEND a chase message to the other person, in the user's name. Call this ONLY after the user
+    has explicitly told you, in this conversation, to send THAT draft (as written or edited), and
+    pass exactly the text they approved: that exact text is what is sent. Never call it on your own
+    initiative, never for several drafts on one vague "ok", and never for a draft the user did not
+    see. If the send fails the draft stays pending and the error comes back.
+
+    Args:
+        draft_id: The draft the user approved
+        text: Exactly the text the user approved (the draft's text, or their edited version)
+    """
+    return whatsapp_matter_call("/drafts/approve", {"draft_id": draft_id, "text": text})
+
+
+@write_tool
+def discard_chase_draft(draft_id: int) -> Dict[str, Any]:
+    """Discard a pending chase draft because the user does not want to send it. It is never sent later."""
+    return whatsapp_matter_call("/drafts/discard", {"draft_id": draft_id})
+
+
 @read_tool
 def get_poll_votes(chat_jid: str, message_id: str) -> Dict[str, Any]:
     """Read the recorded votes of a poll.

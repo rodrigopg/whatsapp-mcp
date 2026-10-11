@@ -52,11 +52,22 @@ type SummaryAnnouncement struct {
 	ClosedAt string `json:"closed_at"`
 }
 
+// SummaryDraft is a chase the AI wrote that waits for the owner's decision.
+type SummaryDraft struct {
+	DraftID  int64  `json:"draft_id"`
+	MatterID int64  `json:"matter_id"`
+	ChatJID  string `json:"chat_jid"`
+	Name     string `json:"name"`
+	Snippet  string `json:"snippet"`
+	Text     string `json:"text"`
+}
+
 type APISummary struct {
 	Day           string                `json:"day"`
 	BuiltAt       string                `json:"built_at"`
 	Items         []SummaryItem         `json:"items"`
 	Announcements []SummaryAnnouncement `json:"announcements"`
+	Drafts        []SummaryDraft        `json:"drafts"`
 	Total         int                   `json:"total"`
 	More          int                   `json:"more"`
 }
@@ -93,6 +104,9 @@ func morningSummary(db *sql.DB, req SummaryRequest, toPN func(string) string, no
 	default:
 		return APISummary{}, err
 	}
+	if s.Drafts == nil { // photographs stored before drafts existed
+		s.Drafts = []SummaryDraft{}
+	}
 	if !req.All && len(s.Items) > summaryMaxItems {
 		s.More = len(s.Items) - summaryMaxItems
 		s.Items = s.Items[:summaryMaxItems]
@@ -126,7 +140,7 @@ func buildSummary(db *sql.DB, asOf time.Time, day string, toPN func(string) stri
 		rank int
 	}
 	var items []ranked
-	s := APISummary{Day: day, BuiltAt: now.Format(time.RFC3339), Items: []SummaryItem{}, Announcements: []SummaryAnnouncement{}}
+	s := APISummary{Day: day, BuiltAt: now.Format(time.RFC3339), Items: []SummaryItem{}, Announcements: []SummaryAnnouncement{}, Drafts: []SummaryDraft{}}
 	var announced []int64
 	for _, m := range all {
 		if m.AnnouncePending && m.ClosedHow != nil && *m.ClosedHow == "confirmed" {
@@ -166,6 +180,15 @@ func buildSummary(db *sql.DB, asOf time.Time, day string, toPN func(string) stri
 		s.Items = append(s.Items, it.item)
 	}
 	s.Total = len(s.Items)
+	pending, err := listDrafts(db, ListDraftsRequest{State: "written"})
+	if err != nil {
+		return APISummary{}, err
+	}
+	for _, d := range pending {
+		if m, err := loadMatter(db, d.MatterID); err == nil && matterState(m, asOf) == "open" {
+			s.Drafts = append(s.Drafts, SummaryDraft{DraftID: d.ID, MatterID: d.MatterID, ChatJID: d.ChatJID, Name: d.Name, Snippet: d.Snippet, Text: d.Text})
+		}
+	}
 
 	body, err := json.Marshal(s)
 	if err != nil {

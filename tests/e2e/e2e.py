@@ -40,16 +40,19 @@ MCP_READ_TOOLS = {
     "search_contacts", "list_messages", "list_chats", "list_active_chats", "get_chat", "get_direct_chat_by_contact",
     "get_contact_chats", "get_last_interaction", "get_message_context", "get_group_info",
     "resolve_contact", "check_whatsapp", "get_poll_votes", "list_matters", "review_next_messages",
-    "suggest_favorites", "list_favorites",
+    "suggest_favorites", "list_favorites", "list_chase_drafts",
 }
 MCP_TOOLS = {
     "archive_chat",
+    "approve_chase_draft",
     "check_whatsapp",
     "close_matter",
     "create_group",
+    "create_chase_draft",
     "create_poll",
     "decide_favorite",
     "delete_message",
+    "discard_chase_draft",
     "download_media",
     "edit_message",
     "get_chat",
@@ -64,6 +67,7 @@ MCP_TOOLS = {
     "leave_group",
     "list_active_chats",
     "list_chats",
+    "list_chase_drafts",
     "list_favorites",
     "list_matters",
     "list_messages",
@@ -273,6 +277,23 @@ class E2E(unittest.TestCase):
             code, d = post("a", path, {})
             self.assertEqual(code, 200, d)
             self.assertIn(key, d)
+
+    # ---- 05c chase draft: the only way a chase leaves is an approved text -------------
+    def test_05c_chase_draft_is_sent_only_when_approved(self):
+        reply = find_msg("a", f"{TAG} hello from B", from_me=False)
+        self.assertTrue(reply, "A did not store B's reply")
+        code, m = post("a", "/matters/record", {"chat_jid": reply["chat_jid"], "message_id": reply["id"], "owed_by": "other", "origin": "promise"})
+        self.assertEqual(code, 200, m)
+        text = f"{TAG} cobranca aprovada"
+        code, d = post("a", "/drafts/create", {"matter_id": m["id"], "text": "rascunho que ninguem aprovou"})
+        self.assertEqual((code, d.get("state")), (200, "written"), d)
+        time.sleep(SEND_GAP)
+        self.assertFalse(find_msg("b", "rascunho que ninguem aprovou", from_me=False), "a draft must never be sent by itself")
+        code, d = post("a", "/drafts/approve", {"draft_id": d["id"], "text": text})
+        self.assertEqual((code, d.get("state"), d.get("sent_text")), (200, "sent", text), d)
+        self.assertTrue(eventually(lambda: find_msg("b", text, from_me=False)), "B did not receive the approved text")
+        code, d = post("a", "/drafts/approve", {"draft_id": d["id"], "text": text})
+        self.assertEqual(code, 400, "a sent draft must not be sent again")
 
     # ---- 06 actions on a message ---------------------------------------------
     def test_06_react(self):
