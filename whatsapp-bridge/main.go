@@ -114,7 +114,7 @@ func NewMessageStore() (*MessageStore, error) {
 			updated_at TIMESTAMP
 		);
 		CREATE INDEX IF NOT EXISTS idx_senders_names ON senders(full_name, push_name);
-	` + pollSchema)
+	` + pollSchema + matterSchema)
 	if err != nil {
 		db.Close()
 		return nil, fmt.Errorf("failed to create tables: %v", err)
@@ -3469,15 +3469,6 @@ img{border:8px solid white;border-radius:8px;box-shadow:0 4px 20px rgba(0,0,0,.2
 				writeJSONError(w, http.StatusBadRequest, "Invalid request format")
 				return
 			}
-			var self []string
-			if client.Store != nil {
-				if client.Store.ID != nil {
-					self = append(self, client.Store.ID.User)
-				}
-				if !client.Store.LID.IsEmpty() {
-					self = append(self, client.Store.LID.User)
-				}
-			}
 			toPN := func(jid string) string {
 				parsed, err := types.ParseJID(jid)
 				if err != nil {
@@ -3485,7 +3476,7 @@ img{border:8px solid white;border-radius:8px;box-shadow:0 4px 20px rgba(0,0,0,.2
 				}
 				return resolveToPN(client, parsed).String()
 			}
-			resp, err := listActiveChats(readDB, req, self, toPN)
+			resp, err := listActiveChats(readDB, req, ownUsers(client), toPN)
 			if err != nil {
 				var invalid *errInvalidRequest
 				if errors.As(err, &invalid) {
@@ -3745,6 +3736,7 @@ img{border:8px solid white;border-radius:8px;box-shadow:0 4px 20px rgba(0,0,0,.2
 	// Handlers for creating a poll and reading its recorded votes.
 	http.HandleFunc("/api/poll", handlePoll(client, messageStore))
 	http.HandleFunc("/api/send_contact", handleSendContact(client, messageStore))
+	registerMatterRoutes(messageStore.db, client)
 	http.HandleFunc("/api/poll_votes", handlePollVotes(messageStore))
 
 	// Handler for sending a typing/recording indicator to a chat.
