@@ -2356,6 +2356,143 @@ func listChats(db *sql.DB, req ChatsRequest) (ChatsResponse, error) {
 	return ChatsResponse{Chats: chats}, rows.Err()
 }
 
+// ---- /api/chats/active ----
+
+// ActiveChatsRequest asks for the conversations that had at least one message
+// in a window. after/before are ISO-8601 and exclusive, like /api/messages.
+type ActiveChatsRequest struct {
+	After         *string `json:"after"`
+	Before        *string `json:"before"`
+	IncludeGroups bool    `json:"include_groups"`
+}
+
+// ActiveChat is one conversation in the window. Link is nil when no link can
+// open the chat (groups, LIDs with no known phone); jid is always set.
+type ActiveChat struct {
+	JID          string  `json:"jid"`
+	Name         string  `json:"name"`
+	IsGroup      bool    `json:"is_group"`
+	FirstTime    string  `json:"first_time"`
+	LastTime     string  `json:"last_time"`
+	MessageCount int     `json:"message_count"`
+	Snippet      string  `json:"snippet"`
+	Link         *string `json:"link"`
+}
+
+type ActiveChatsResponse struct {
+	Chats []ActiveChat `json:"chats"`
+}
+
+const activeSnippetChars = 120
+
+func jidUser(jid string) string {
+	user, _, _ := strings.Cut(jid, "@")
+	return user
+}
+
+func isDigits(s string) bool {
+	return s != "" && strings.Trim(s, "0123456789") == ""
+}
+
+// listActiveChats returns one row per individual conversation (plus groups on
+// request) with a message in the window, chronological by first message. The
+// own chat (selfUsers), status and newsletters are never listed. The window
+// compares real instants (julianday), not strings: messages.timestamp keeps
+// whatever offset it was written with, so a -03:00 day must still include
+// 22:00 local stored as 01:00Z. toPN maps a LID jid to its phone jid (nil = as is).
+func listActiveChats(db *sql.DB, req ActiveChatsRequest, selfUsers []string, toPN func(jid string) string) (ActiveChatsResponse, error) {
+	kinds := "messages.chat_jid LIKE '%@s.whatsapp.net' OR messages.chat_jid LIKE '%@lid'"
+	if req.IncludeGroups {
+		kinds += " OR messages.chat_jid LIKE '%@g.us'"
+	}
+	where := []string{"(" + kinds + ")"}
+	params := []interface{}{activeSnippetChars}
+	for _, b := range []struct {
+		name, op string
+		val      *string
+	}{{"after", ">", req.After}, {"before", "<", req.Before}} {
+		if b.val == nil || *b.val == "" {
+			continue
+		}
+		t, err := parseISODate(*b.val)
+		if err != nil {
+			return ActiveChatsResponse{}, &errInvalidRequest{msg: fmt.Sprintf("invalid date format for '%s': %s", b.name, *b.val)}
+		}
+		where = append(where, "julianday(messages.timestamp) "+b.op+" julianday(?)")
+		params = append(params, t.UTC().Format("2006-01-02 15:04:05.000"))
+	}
+
+	rows, err := db.Query(`
+		SELECT messages.chat_jid, messages.timestamp, substr(messages.content, 1, ?), messages.media_type,
+		       chats.name, senders.full_name, senders.push_name
+		FROM messages
+		JOIN chats ON chats.jid = messages.chat_jid
+		LEFT JOIN senders ON senders.jid = messages.chat_jid
+		WHERE `+strings.Join(where, " AND ")+`
+		ORDER BY julianday(messages.timestamp), messages.rowid`, params...)
+	if err != nil {
+		return ActiveChatsResponse{}, err
+	}
+	defer rows.Close()
+
+	self := map[string]bool{}
+	for _, u := range selfUsers {
+		self[u] = true
+	}
+	idx := map[string]int{} // jid -> position in chats
+	chats := []ActiveChat{}
+	for rows.Next() {
+		var jid string
+		var ts time.Time
+		var content, mediaType, chatName, fullName, pushName sql.NullString
+		if err := rows.Scan(&jid, &ts, &content, &mediaType, &chatName, &fullName, &pushName); err != nil {
+			return ActiveChatsResponse{}, err
+		}
+		if self[jidUser(jid)] {
+			continue
+		}
+		i, seen := idx[jid]
+		if !seen {
+			i = len(chats)
+			idx[jid] = i
+			chats = append(chats, ActiveChat{JID: jid, IsGroup: strings.HasSuffix(jid, "@g.us"), FirstTime: ts.Format(time.RFC3339)})
+			c := &chats[i]
+			pn := jid
+			if toPN != nil && strings.HasSuffix(jid, "@lid") {
+				pn = toPN(jid)
+			}
+			c.Name = chatName.String
+			if strings.TrimSpace(c.Name) == "" || isDigits(c.Name) {
+				c.Name = ""
+				for _, n := range []string{fullName.String, pushName.String} {
+					if strings.TrimSpace(n) != "" {
+						c.Name = n
+						break
+					}
+				}
+				if c.Name == "" {
+					c.Name = jidUser(pn)
+				}
+			}
+			if !c.IsGroup && strings.HasSuffix(pn, "@s.whatsapp.net") {
+				link := "https://wa.me/" + jidUser(pn)
+				c.Link = &link
+			}
+		}
+		c := &chats[i]
+		c.LastTime = ts.Format(time.RFC3339)
+		c.MessageCount++
+		c.Snippet = strings.Join(strings.Fields(content.String), " ")
+		if c.Snippet == "" && mediaType.String != "" {
+			c.Snippet = "[" + mediaType.String + "]"
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return ActiveChatsResponse{}, err
+	}
+	return ActiveChatsResponse{Chats: chats}, nil
+}
+
 // ---- /api/messages ----
 
 type MessagesRequest struct {
@@ -3317,6 +3454,45 @@ img{border:8px solid white;border-radius:8px;box-shadow:0 4px 20px rgba(0,0,0,.2
 			resp, err := listChats(readDB, req)
 			if err != nil {
 				writeJSONError(w, http.StatusInternalServerError, err.Error())
+				return
+			}
+			writeJSON(w, resp)
+		})
+
+		http.HandleFunc("/api/chats/active", func(w http.ResponseWriter, r *http.Request) {
+			if r.Method != http.MethodPost {
+				writeJSONError(w, http.StatusMethodNotAllowed, "Method not allowed")
+				return
+			}
+			var req ActiveChatsRequest
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+				writeJSONError(w, http.StatusBadRequest, "Invalid request format")
+				return
+			}
+			var self []string
+			if client.Store != nil {
+				if client.Store.ID != nil {
+					self = append(self, client.Store.ID.User)
+				}
+				if !client.Store.LID.IsEmpty() {
+					self = append(self, client.Store.LID.User)
+				}
+			}
+			toPN := func(jid string) string {
+				parsed, err := types.ParseJID(jid)
+				if err != nil {
+					return jid
+				}
+				return resolveToPN(client, parsed).String()
+			}
+			resp, err := listActiveChats(readDB, req, self, toPN)
+			if err != nil {
+				var invalid *errInvalidRequest
+				if errors.As(err, &invalid) {
+					writeJSONError(w, http.StatusBadRequest, err.Error())
+				} else {
+					writeJSONError(w, http.StatusInternalServerError, err.Error())
+				}
 				return
 			}
 			writeJSON(w, resp)
