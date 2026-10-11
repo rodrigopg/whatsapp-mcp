@@ -306,6 +306,7 @@ Go WhatsApp Bridge (whatsapp-bridge/)
 | `search_contacts` | Search contacts by name or phone number (LID-aware) |
 | `list_messages` | Retrieve messages with filters, pagination, context |
 | `list_chats` | List chats with metadata |
+| `send_contact` | Send a contact as a native contact card (vCard) |
 | `list_active_chats` | Who you talked to in a period (e.g. one day): one row per conversation with first/last time, count, last-message snippet and a link |
 | `get_chat` | Get info about a specific chat |
 | `get_direct_chat_by_contact` | Find a direct chat by phone number (LID-aware) |

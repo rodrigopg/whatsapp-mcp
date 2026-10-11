@@ -3744,6 +3744,7 @@ img{border:8px solid white;border-radius:8px;box-shadow:0 4px 20px rgba(0,0,0,.2
 
 	// Handlers for creating a poll and reading its recorded votes.
 	http.HandleFunc("/api/poll", handlePoll(client, messageStore))
+	http.HandleFunc("/api/send_contact", handleSendContact(client, messageStore))
 	http.HandleFunc("/api/poll_votes", handlePollVotes(messageStore))
 
 	// Handler for sending a typing/recording indicator to a chat.
