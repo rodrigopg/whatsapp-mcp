@@ -21,6 +21,8 @@ Register a matter with `record_matter` (always citing that message) when it is:
 
 Set `owed_by` to who has to act: `owner` or `other`.
 
+Messages from groups only reach you when they @-mention the user, and they are addressed to the user like any other request. In a group, a matter is closed by a later message from someone else in the group confirming it.
+
 Do **not** register: plain information ("o orçamento saiu hoje"), a conditional promise ("qualquer coisa eu te aviso"), pleasantries, promotions and automatic messages, unless they contain a concrete request to the owner.
 
 - **Deadline**: turn "até sexta" into a date (`YYYY-MM-DD`, relative to the message's own date); no time. For an event, the date it happens. No date mentioned: leave it empty.

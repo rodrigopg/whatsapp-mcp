@@ -481,8 +481,8 @@ def list_matters(
 
 @read_tool
 def review_next_messages(limit: int = 100) -> Dict[str, Any]:
-    """Get the messages not reviewed yet, oldest first (one-to-one chats only, never the user's own
-    chat, at most one month old), with the open matters of those chats and next_cursor. Read them,
+    """Get the messages not reviewed yet, oldest first (one-to-one chats, plus group messages that @-mention
+    the user; never the user's own chat; at most one month old), with the open matters of those chats and next_cursor. Read them,
     record or close matters (see /whats:triage), and only then call mark_reviewed with next_cursor.
     This tool never moves the cursor.
 
@@ -507,7 +507,7 @@ def record_matter(
     chat instead of creating another (one subject, one matter). A refusal comes back as {"error": ...}.
 
     Args:
-        chat_jid: The one-to-one chat (groups and the user's own chat are refused)
+        chat_jid: A one-to-one chat, or a group when the cited message @-mentions the user (the user's own chat is refused)
         message_id: The message that proves it (must exist locally and be at most one month old)
         owed_by: Who has to act: owner (the user) or other (the other person)
         origin: request (asked something of the user), demand (chased the user), promise (someone

@@ -114,7 +114,7 @@ func NewMessageStore() (*MessageStore, error) {
 			updated_at TIMESTAMP
 		);
 		CREATE INDEX IF NOT EXISTS idx_senders_names ON senders(full_name, push_name);
-	` + pollSchema + matterSchema + favoritesSchema + summarySchema + draftsSchema)
+	` + pollSchema + matterSchema + favoritesSchema + summarySchema + draftsSchema + mentionsSchema)
 	if err != nil {
 		db.Close()
 		return nil, fmt.Errorf("failed to create tables: %v", err)
@@ -878,6 +878,11 @@ func handleMessage(client *whatsmeow.Client, messageStore *MessageStore, msg *ev
 		fileEncSHA256,
 		fileLength,
 	)
+	if jids := mentionedJIDs(msg.Message); err == nil && len(jids) > 0 {
+		if mErr := storeMentions(messageStore.db, chatJID, msg.Info.ID, jids); mErr != nil {
+			logger.Warnf("Failed to store mentions: %v", mErr)
+		}
+	}
 
 	if poll := pollCreation(msg.Message); poll != nil {
 		var names []string
@@ -4257,6 +4262,9 @@ func handleHistorySync(client *whatsmeow.Client, messageStore *MessageStore, his
 					logger.Warnf("Failed to store history message: %v", err)
 				} else {
 					syncedCount++
+					if jids := mentionedJIDs(inner); len(jids) > 0 {
+						_ = storeMentions(messageStore.db, chatJID, msgID, jids)
+					}
 					// Log successful message storage
 					if mediaType != "" {
 						logger.Infof("Stored message: [%s] %s -> %s: [%s: %s] %s",

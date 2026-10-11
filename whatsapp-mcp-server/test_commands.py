@@ -37,7 +37,7 @@ class TestCommands(unittest.TestCase):
 
     def test_rules_that_must_not_drift(self):
         triage, fav = read("triage.md"), read("favorites.md")
-        for rule in ('"confirmed"', "Never close", "uncertain", "mark_reviewed", "never send a message"):
+        for rule in ('"confirmed"', "Never close", "uncertain", "mark_reviewed", "never send a message", "@-mention"):
             self.assertIn(rule, triage)
         for rule in ("only propose", "Do not decide for the user"):
             self.assertIn(rule, fav)

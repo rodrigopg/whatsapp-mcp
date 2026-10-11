@@ -208,8 +208,24 @@ func oneOf(v string, set ...string) bool {
 	return false
 }
 
+// checkTrackedChat: a matter lives in a one-to-one chat, or in a group when the
+// cited message @-mentions the owner (anything else in a group is not for them).
+func checkTrackedChat(db *sql.DB, jid, messageID string, selfUsers []string) error {
+	if strings.HasSuffix(jid, "@g.us") {
+		ok, err := mentionsOwner(db, jid, messageID, selfUsers)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			return invalid("message %s does not mention the owner: in groups only @mentions are tracked", messageID)
+		}
+		return nil
+	}
+	return checkIndividualChat(jid, selfUsers)
+}
+
 // checkIndividualChat: only one-to-one chats count, never the owner's own chat
-// (groups need the owner's @mention, which the bridge does not store yet).
+// (a group needs the owner's @mention, see checkTrackedChat).
 func checkIndividualChat(jid string, selfUsers []string) error {
 	if !strings.HasSuffix(jid, "@s.whatsapp.net") && !strings.HasSuffix(jid, "@lid") {
 		return invalid("chat %s is not an individual chat: groups, status and newsletters are not supported", jid)
@@ -318,7 +334,7 @@ func recordMatter(db *sql.DB, req RecordMatterRequest, selfUsers []string, now t
 			return APIMatter{}, invalid("deadline must be a date YYYY-MM-DD")
 		}
 	}
-	if err := checkIndividualChat(req.ChatJID, selfUsers); err != nil {
+	if err := checkTrackedChat(db, req.ChatJID, req.MessageID, selfUsers); err != nil {
 		return APIMatter{}, err
 	}
 	content, ts, _, err := loadMessage(db, req.ChatJID, req.MessageID)
@@ -527,7 +543,8 @@ func reviewCursor(db *sql.DB) (*time.Time, error) {
 
 // reviewNext returns the messages nobody has reviewed yet (after the cursor,
 // at most one month old, individual chats, not the owner's own), oldest first,
-// with the open matters of those chats. It never moves the cursor.
+// with the open matters of those chats. Group messages come only when they
+// @-mention the owner. It never moves the cursor.
 func reviewNext(db *sql.DB, req ReviewNextRequest, selfUsers []string, now time.Time) (ReviewNextResponse, error) {
 	limit := req.Limit
 	if limit <= 0 || limit > 500 {
@@ -541,8 +558,15 @@ func reviewNext(db *sql.DB, req ReviewNextRequest, selfUsers []string, now time.
 	if cursor != nil && cursor.After(since) {
 		since = *cursor
 	}
-	where := `(m.chat_jid LIKE '%@s.whatsapp.net' OR m.chat_jid LIKE '%@lid') AND julianday(m.timestamp) > julianday(?)`
-	args := []interface{}{since.UTC().Format("2006-01-02 15:04:05.000000000")}
+	kinds, args := `m.chat_jid LIKE '%@s.whatsapp.net' OR m.chat_jid LIKE '%@lid'`, []interface{}{}
+	if len(selfUsers) > 0 { // group messages only when they @-mention the owner
+		kinds += ` OR (m.chat_jid LIKE '%@g.us' AND EXISTS (SELECT 1 FROM message_mentions mm WHERE mm.chat_jid = m.chat_jid AND mm.message_id = m.id AND mm.mentioned_user IN (?` + strings.Repeat(",?", len(selfUsers)-1) + `)))`
+		for _, u := range selfUsers {
+			args = append(args, u)
+		}
+	}
+	where := `(` + kinds + `) AND julianday(m.timestamp) > julianday(?)`
+	args = append(args, since.UTC().Format("2006-01-02 15:04:05.000000000"))
 	for _, u := range selfUsers {
 		where += ` AND substr(m.chat_jid, 1, instr(m.chat_jid, '@') - 1) != ?`
 		args = append(args, u)
