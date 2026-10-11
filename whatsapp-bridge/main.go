@@ -1051,10 +1051,29 @@ func handleReact(client *whatsmeow.Client) http.HandlerFunc {
 	}
 }
 
+// applyOwnProtocolAction mirrors our own successful edit/revoke into the local
+// copy. WhatsApp does not echo our own edit/revoke back on a single-device
+// account, so handleMessage never sees it. Same semantics and chat-key
+// normalization as the incoming path; failures are logged, not fatal, because
+// the message was already sent. Empty content is skipped: like the incoming
+// path, an edit must never blank a stored row.
+func applyOwnProtocolAction(client *whatsmeow.Client, messageStore *MessageStore, chat types.JID, id, content string) {
+	if messageStore == nil || strings.TrimSpace(content) == "" {
+		return
+	}
+	if err := messageStore.ApplyEdit(id, resolveToPN(client, chat).String(), content, true, ""); err != nil {
+		ownActionLogger.Warnf("Failed to apply own edit/revoke locally: %v", err)
+	}
+}
+
+// ownActionLogger logs applyOwnProtocolAction failures. The REST handlers are
+// built without the client logger, so this one mirrors its module and level.
+var ownActionLogger = waLog.Stdout("Client", "INFO", true)
+
 // handleEdit returns the handler for POST /api/edit. Editing is always the
 // caller's own message (WhatsApp only allows editing your own messages), so
 // there's no group/from_me ambiguity to guard against here.
-func handleEdit(client *whatsmeow.Client) http.HandlerFunc {
+func handleEdit(client *whatsmeow.Client, messageStore *MessageStore) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -1063,6 +1082,12 @@ func handleEdit(client *whatsmeow.Client) http.HandlerFunc {
 		var req EditRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.ChatJID == "" || req.MessageID == "" {
 			http.Error(w, "Invalid request: chat_jid and message_id required", http.StatusBadRequest)
+			return
+		}
+		// An edit must never blank the message (or a media caption), here or in
+		// the local row applyOwnProtocolAction updates.
+		if strings.TrimSpace(req.NewText) == "" {
+			http.Error(w, "Invalid request: new_text must not be empty", http.StatusBadRequest)
 			return
 		}
 		chatJID, err := types.ParseJID(req.ChatJID)
@@ -1084,6 +1109,7 @@ func handleEdit(client *whatsmeow.Client) http.HandlerFunc {
 			json.NewEncoder(w).Encode(MarkChatResponse{Success: false, Message: fmt.Sprintf("SendMessage error: %v", err)})
 			return
 		}
+		applyOwnProtocolAction(client, messageStore, chatJID, req.MessageID, req.NewText)
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(MarkChatResponse{Success: true, Message: fmt.Sprintf("Message %s edited", req.MessageID)})
 	}
@@ -1093,7 +1119,7 @@ func handleEdit(client *whatsmeow.Client) http.HandlerFunc {
 // participant's message in a group (from_me=false) is rejected for the same
 // reason as handleReact: no participant JID available, so actionSenderJID
 // would fall back to the group's own JID and produce a malformed revoke.
-func handleRevoke(client *whatsmeow.Client) http.HandlerFunc {
+func handleRevoke(client *whatsmeow.Client, messageStore *MessageStore) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -1129,6 +1155,7 @@ func handleRevoke(client *whatsmeow.Client) http.HandlerFunc {
 			json.NewEncoder(w).Encode(MarkChatResponse{Success: false, Message: fmt.Sprintf("SendMessage error: %v", err)})
 			return
 		}
+		applyOwnProtocolAction(client, messageStore, chatJID, req.MessageID, revokedContent)
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(MarkChatResponse{Success: true, Message: fmt.Sprintf("Message %s revoked", req.MessageID)})
 	}
@@ -3730,10 +3757,10 @@ img{border:8px solid white;border-radius:8px;box-shadow:0 4px 20px rgba(0,0,0,.2
 	http.HandleFunc("/api/react", handleReact(client))
 
 	// Handler for editing the text of a previously sent message.
-	http.HandleFunc("/api/edit", handleEdit(client))
+	http.HandleFunc("/api/edit", handleEdit(client, messageStore))
 
 	// Handler for revoking (deleting for everyone) a previously sent message.
-	http.HandleFunc("/api/revoke", handleRevoke(client))
+	http.HandleFunc("/api/revoke", handleRevoke(client, messageStore))
 
 	// Handler for adding, removing, promoting or demoting group participants.
 	http.HandleFunc("/api/group_participants", handleGroupParticipants(client))
