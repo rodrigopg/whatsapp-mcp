@@ -128,23 +128,33 @@ def pending_audios(conn, limit=None):
 
 
 def download(message_id, chat_jid):
-    """Download via the bridge. Returns (path, error). On success error is None;
-    on failure path is None and error carries the bridge's message so the caller
-    can distinguish an expired 403 from a bridge bug in the log."""
+    """Download via the bridge. Returns (path, error, media_gone).
+
+    On success error is None; on failure path is None and error carries the
+    bridge's message so the caller can distinguish an expired 403 from a bridge
+    bug in the log. media_gone is True only when the bridge answered with a
+    well-formed JSON body carrying reason == "media_gone", i.e. the CDN itself
+    said 403/404/410 for this media. Everything else (connection error, timeout,
+    401 from a misconfigured token, 5xx, a non-JSON body, any other bridge
+    error) says nothing about the media, so media_gone is False and the caller
+    must retry later instead of retiring the audio."""
     try:
         r = requests.post(f"{API_BASE}/download",
                           json={"message_id": message_id, "chat_jid": chat_jid},
                           headers=_bridge_auth_headers(),
                           timeout=120)
     except requests.RequestException as e:
-        return None, f"request error: {e}"
+        return None, f"request error: {e}", False
     try:
         body = r.json()
     except ValueError:
-        return None, f"HTTP {r.status_code}: {r.text[:120]}"
+        return None, f"HTTP {r.status_code}: {r.text[:120]}", False
+    if not isinstance(body, dict):
+        return None, f"HTTP {r.status_code}: unexpected body", False
     if r.status_code == 200 and body.get("success"):
-        return body.get("path"), None
-    return None, body.get("message", f"HTTP {r.status_code}")
+        return body.get("path"), None, False
+    media_gone = r.status_code == 500 and body.get("reason") == "media_gone"
+    return None, body.get("message", f"HTTP {r.status_code}"), media_gone
 
 
 def sha256_file(path):
@@ -302,13 +312,20 @@ def main():
                         except OSError:
                             pass
 
-            path, dl_err = download(msg_id, chat_jid)
+            path, dl_err, media_gone = download(msg_id, chat_jid)
             if not path or not os.path.isfile(path):
                 # Only mark permanently unavailable once the CDN window has
-                # certainly passed. A recent audio that fails is likely a
-                # transient blip — leave content='' so the next sweep retries
-                # instead of silently losing a live message.
-                if _is_expired(ts):
+                # certainly passed AND the bridge reported the CDN signal
+                # (media_gone: 403/404/410). Any other failure (bridge restarted
+                # mid-sweep, wrong port, connection refused, 401 from a bad
+                # token, 5xx, non-JSON body) says nothing about the media:
+                # marking it expired would retire a perfectly good audio for
+                # good, since the sentinel is never retried. Observed for real —
+                # a sweep kept running after the bridge was stopped and wrote 43
+                # false "expired" markers in a couple of minutes.
+                # A recent audio that fails is likewise left at content='' so the
+                # next sweep retries instead of silently losing a live message.
+                if media_gone and _is_expired(ts):
                     write_content(msg_id, chat_jid, SENTINEL_UNAVAILABLE)
                     unavailable += 1
                     log(f"{prefix} unavailable (expired CDN): {dl_err}")
