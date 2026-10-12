@@ -161,7 +161,12 @@ class McpPathWithoutSlash(unittest.TestCase):
                               MCP_OAUTH_DB=os.path.join(d, "o.db"))
             for name, mod in (("oauth", oauth), ("plain", load_main(MCP_TRANSPORT="streamable-http", MCP_AUTH_TOKEN=TOKEN))):
                 with TestClient(mod.build_http_app(), base_url=URL, follow_redirects=False) as c:
-                    self.assertEqual(self.post(c, None).status_code, 401, f"{name}: no token must be 401, not a redirect")
+                    r = self.post(c, None)
+                    self.assertEqual(r.status_code, 401, f"{name}: no token must be 401, not a redirect")
+                    if name == "oauth":
+                        self.assertEqual(r.headers["www-authenticate"], f'Bearer resource_metadata="{URL}/.well-known/oauth-protected-resource/mcp"')
+                    else:
+                        self.assertEqual(r.headers["www-authenticate"], "Bearer")
                     self.assertEqual(self.post(c, "wrong").status_code, 401, name)
                     self.assertEqual(self.post(c, TOKEN).status_code, 200, name)
 

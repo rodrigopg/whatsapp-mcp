@@ -931,20 +931,33 @@ class McpPathFix:
     """ASGI middleware: serve `/mcp` exactly like `/mcp/`. The router would answer `/mcp` with a 307 redirect, and
     connector validators (Claude, ChatGPT) POST to the URL as typed and do not follow it."""
 
-    def __init__(self, app):
+    def __init__(self, app, challenge: bytes = b"Bearer"):
         self.app = app
+        self.challenge = challenge
 
     async def __call__(self, scope, receive, send):
-        if scope["type"] == "http" and scope["path"] == "/mcp":
-            scope = dict(scope, path="/mcp/", raw_path=b"/mcp/")
-        await self.app(scope, receive, send)
+        if scope["type"] != "http" or scope["path"] not in ("/mcp", "/mcp/"):
+            return await self.app(scope, receive, send)
+        scope = dict(scope, path="/mcp/", raw_path=b"/mcp/")
+
+        async def with_challenge(message):
+            # RFC 9728: a 401 must say where to find the authorization server (the SDK's answer has no header).
+            if message["type"] == "http.response.start" and message["status"] == 401:
+                headers = [(k, v) for k, v in message["headers"] if k.lower() != b"www-authenticate"]
+                message = dict(message, headers=headers + [(b"www-authenticate", self.challenge)])
+            await send(message)
+
+        await self.app(scope, receive, with_challenge)
 
 
 def build_http_app():
     """The ASGI app the HTTP transport serves. With OAuth the provider accepts the static token too; otherwise the
     plain bearer wrapper guards everything."""
     app = mcp.streamable_http_app()
-    return McpPathFix(app if _OAUTH else BearerAuth(app, _STATIC_TOKEN))
+    if not _OAUTH:
+        return McpPathFix(BearerAuth(app, _STATIC_TOKEN))
+    prm = f'{_OAUTH[0].public_url}/.well-known/oauth-protected-resource/mcp'
+    return McpPathFix(app, f'Bearer resource_metadata="{prm}"'.encode())
 
 
 def main() -> None:
