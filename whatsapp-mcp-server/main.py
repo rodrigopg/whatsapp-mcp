@@ -3,6 +3,7 @@ import os
 import sys
 from typing import List, Dict, Any, Optional
 from mcp.server.fastmcp import FastMCP
+from oauth import install_oauth_routes, oauth_from_env
 from whatsapp import (
     search_contacts as whatsapp_search_contacts,
     list_messages as whatsapp_list_messages,
@@ -39,8 +40,14 @@ from whatsapp import (
     check_whatsapp as whatsapp_check_whatsapp
 )
 
-# Initialize FastMCP server
-mcp = FastMCP("whatsapp")
+# Initialize FastMCP server. OAuth (for Claude web connectors) is opt-in: only the HTTP transport, only when
+# MCP_PUBLIC_URL and MCP_OAUTH_PASSPHRASE are set; see oauth.py.
+_OAUTH = oauth_from_env() if os.environ.get("MCP_TRANSPORT", "").strip().lower() == "streamable-http" else None
+if _OAUTH:
+    mcp = FastMCP("whatsapp", auth_server_provider=_OAUTH[0], auth=_OAUTH[1])
+    install_oauth_routes(mcp, _OAUTH[0])
+else:
+    mcp = FastMCP("whatsapp")
 
 # MCP_READONLY=true registers only the read tools; write tools are never exposed.
 READONLY = os.environ.get("MCP_READONLY", "").strip().lower() in ("1", "true", "yes", "on")
@@ -928,7 +935,9 @@ def main() -> None:
         port = int(os.environ.get("MCP_PORT", "8000"))
         token = os.environ.get("MCP_AUTH_TOKEN", "")
         check_http_config(host, token)
-        uvicorn.run(BearerAuth(mcp.streamable_http_app(), token), host=host, port=port)
+        app = mcp.streamable_http_app()
+        # With OAuth the provider accepts the static token too; otherwise the plain bearer wrapper guards everything.
+        uvicorn.run(app if _OAUTH else BearerAuth(app, token), host=host, port=port)
     else:
         sys.exit(f"unsupported MCP_TRANSPORT={transport!r} (use stdio or streamable-http)")
 
