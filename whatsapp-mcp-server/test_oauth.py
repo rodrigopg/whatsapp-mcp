@@ -145,6 +145,27 @@ class OAuthFlow(unittest.TestCase):
             self.assertEqual(r.status_code, 200)
 
 
+class McpPathWithoutSlash(unittest.TestCase):
+    """Connector validators POST to the URL exactly as typed (`.../mcp`) and do not follow redirects."""
+
+    def post(self, client, bearer):
+        h = {"accept": "application/json, text/event-stream", "content-type": "application/json"}
+        if bearer:
+            h["authorization"] = f"Bearer {bearer}"
+        return client.post("/mcp", headers=h, json={"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {
+            "protocolVersion": "2025-03-26", "capabilities": {}, "clientInfo": {"name": "t", "version": "1"}}})
+
+    def test_mcp_without_slash_answers_directly_with_oauth_and_with_plain_bearer(self):
+        with tempfile.TemporaryDirectory() as d:
+            oauth = load_main(MCP_TRANSPORT="streamable-http", MCP_AUTH_TOKEN=TOKEN, MCP_PUBLIC_URL=URL, MCP_OAUTH_PASSPHRASE=PASS,
+                              MCP_OAUTH_DB=os.path.join(d, "o.db"))
+            for name, mod in (("oauth", oauth), ("plain", load_main(MCP_TRANSPORT="streamable-http", MCP_AUTH_TOKEN=TOKEN))):
+                with TestClient(mod.build_http_app(), base_url=URL, follow_redirects=False) as c:
+                    self.assertEqual(self.post(c, None).status_code, 401, f"{name}: no token must be 401, not a redirect")
+                    self.assertEqual(self.post(c, "wrong").status_code, 401, name)
+                    self.assertEqual(self.post(c, TOKEN).status_code, 200, name)
+
+
 class OAuthConfig(unittest.TestCase):
     def test_off_by_default_and_the_static_token_wrapper_is_unchanged(self):
         mod = load_main(MCP_TRANSPORT="streamable-http", MCP_AUTH_TOKEN=TOKEN)

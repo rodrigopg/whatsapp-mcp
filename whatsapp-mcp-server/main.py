@@ -51,6 +51,7 @@ else:
     mcp = FastMCP("whatsapp")
 
 # MCP_READONLY=true registers only the read tools; write tools are never exposed.
+_STATIC_TOKEN = os.environ.get("MCP_AUTH_TOKEN", "")  # read once, at import, like MCP_READONLY
 READONLY = os.environ.get("MCP_READONLY", "").strip().lower() in ("1", "true", "yes", "on")
 
 
@@ -926,6 +927,26 @@ class BearerAuth:
         await send({"type": "http.response.body", "body": b"unauthorized"})
 
 
+class McpPathFix:
+    """ASGI middleware: serve `/mcp` exactly like `/mcp/`. The router would answer `/mcp` with a 307 redirect, and
+    connector validators (Claude, ChatGPT) POST to the URL as typed and do not follow it."""
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] == "http" and scope["path"] == "/mcp":
+            scope = dict(scope, path="/mcp/", raw_path=b"/mcp/")
+        await self.app(scope, receive, send)
+
+
+def build_http_app():
+    """The ASGI app the HTTP transport serves. With OAuth the provider accepts the static token too; otherwise the
+    plain bearer wrapper guards everything."""
+    app = mcp.streamable_http_app()
+    return McpPathFix(app if _OAUTH else BearerAuth(app, _STATIC_TOKEN))
+
+
 def main() -> None:
     transport = os.environ.get("MCP_TRANSPORT", "stdio").strip().lower()
     if transport == "stdio":
@@ -935,11 +956,8 @@ def main() -> None:
 
         host = os.environ.get("MCP_HOST", "127.0.0.1")
         port = int(os.environ.get("MCP_PORT", "8000"))
-        token = os.environ.get("MCP_AUTH_TOKEN", "")
-        check_http_config(host, token)
-        app = mcp.streamable_http_app()
-        # With OAuth the provider accepts the static token too; otherwise the plain bearer wrapper guards everything.
-        uvicorn.run(app if _OAUTH else BearerAuth(app, token), host=host, port=port)
+        check_http_config(host, _STATIC_TOKEN)
+        uvicorn.run(build_http_app(), host=host, port=port)
     else:
         sys.exit(f"unsupported MCP_TRANSPORT={transport!r} (use stdio or streamable-http)")
 
