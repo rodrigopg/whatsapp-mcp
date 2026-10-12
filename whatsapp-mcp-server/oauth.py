@@ -35,14 +35,15 @@ REFRESH_TTL = 30 * 86400
 CODE_TTL = 300
 PENDING_TTL = 600
 MAX_FAILS, LOCK_WINDOW = 10, 900  # failed passphrases tolerated per window, across everyone
-CLAUDE_HOSTS = {"claude.ai", "www.claude.ai", "claude.com", "www.claude.com"}
+# Claude (claude.ai connectors) and ChatGPT (developer-mode connectors) callbacks; others are refused.
+CLIENT_HOSTS = {"claude.ai", "www.claude.ai", "claude.com", "www.claude.com", "chatgpt.com", "chat.openai.com"}
 LOOPBACK = {"localhost", "127.0.0.1", "[::1]", "::1"}
 
 
 def redirect_allowed(uri: str) -> bool:
-    """Only Claude's own callbacks (https) and loopback callbacks (Claude Code) may be registered."""
+    """Only Claude's and ChatGPT's own callbacks (https) and loopback callbacks (Claude Code) may be registered."""
     u = urlparse(uri)
-    return (u.scheme == "https" and u.hostname in CLAUDE_HOSTS) or (u.scheme == "http" and u.hostname in LOOPBACK)
+    return (u.scheme == "https" and u.hostname in CLIENT_HOSTS) or (u.scheme == "http" and u.hostname in LOOPBACK)
 
 
 def _hash(token: str) -> str:

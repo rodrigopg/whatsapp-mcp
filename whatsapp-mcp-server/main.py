@@ -3,6 +3,7 @@ import os
 import sys
 from typing import List, Dict, Any, Optional
 from mcp.server.fastmcp import FastMCP
+from mcp.types import ToolAnnotations
 from oauth import install_oauth_routes, oauth_from_env
 from whatsapp import (
     search_contacts as whatsapp_search_contacts,
@@ -54,7 +55,8 @@ READONLY = os.environ.get("MCP_READONLY", "").strip().lower() in ("1", "true", "
 
 
 def read_tool(fn):
-    return mcp.tool()(fn)
+    # readOnlyHint lets Claude and ChatGPT skip the "this changes something" confirmation for pure reads.
+    return mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, openWorldHint=False))(fn)
 
 
 def write_tool(fn):

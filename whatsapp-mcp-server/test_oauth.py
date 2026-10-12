@@ -120,7 +120,9 @@ class OAuthFlow(unittest.TestCase):
     def test_redirect_uris_outside_claude_and_loopback_are_refused(self):
         self.assertEqual(self.register("https://claude.ai/api/mcp/auth_callback").status_code, 201)
         self.assertEqual(self.register("http://localhost:54321/callback").status_code, 201)
-        for bad in ("https://evil.example/cb", "http://claude.ai/cb", "https://claude.ai.evil.example/cb"):
+        for chatgpt in ("https://chatgpt.com/connector_platform_oauth_redirect", "https://chatgpt.com/oauth/callback", "https://chat.openai.com/oauth/callback"):
+            self.assertEqual(self.register(chatgpt).status_code, 201, chatgpt)
+        for bad in ("https://evil.example/cb", "http://claude.ai/cb", "https://claude.ai.evil.example/cb", "https://chatgpt.com.evil.example/cb", "http://chatgpt.com/cb"):
             self.assertEqual(self.register(bad).status_code, 400, bad)
 
     def test_mcp_needs_a_valid_token_but_the_static_token_still_works(self):

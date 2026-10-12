@@ -47,6 +47,14 @@ class ReadonlyRegistration(unittest.TestCase):
         self.assertEqual(tool_names(load_main(MCP_READONLY="false")), tool_names(load_main()))
 
 
+class ToolAnnotationsTest(unittest.TestCase):
+    def test_read_tools_are_marked_read_only_and_writes_are_not(self):
+        tools = {t.name: t for t in asyncio.run(load_main().mcp.list_tools())}
+        for name, t in tools.items():
+            read_only = bool(t.annotations and t.annotations.readOnlyHint)
+            self.assertEqual(read_only, name in READ_TOOLS, f"{name}: readOnlyHint={read_only}")
+
+
 class HttpStartup(unittest.TestCase):
     def test_refuses_without_token(self):
         for host in ("127.0.0.1", "0.0.0.0"):
