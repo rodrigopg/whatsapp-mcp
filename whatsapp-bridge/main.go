@@ -3726,6 +3726,7 @@ img{border:8px solid white;border-radius:8px;box-shadow:0 4px 20px rgba(0,0,0,.2
 	registerSummaryRoute(messageStore.db, client)
 	registerDraftRoutes(messageStore, client)
 	http.HandleFunc("/api/chat/delete", handleDeleteChat(client, messageStore))
+	http.HandleFunc("/api/appstate/resync", handleAppStateResync(client))
 	http.HandleFunc("/api/poll_votes", handlePollVotes(messageStore))
 
 	// Handler for sending a typing/recording indicator to a chat.

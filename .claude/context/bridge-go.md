@@ -71,3 +71,7 @@ Additive tables created in `NewMessageStore` (each feature owns its schema strin
 
 `POST /api/chat/delete` (`chat_delete.go`) deletes a chat from WhatsApp through the `deleteChat` app-state patch (with the stored last message as range). It refuses unless the body carries `expect_name_prefix` and the chat's stored name starts with it, so a mistyped JID cannot delete a real conversation; `forget_local` also drops the local rows. REST only, no MCP tool on purpose (an AI client should not be able to delete chats). Used by the live gate to remove its `e2e-...` groups.
 
+## App-state drift ("mismatching LTHash")
+
+If the log shows `failed to verify patch vNN: mismatching LTHash` and every archive / mark-read / delete-chat answers 500 "server returned error updating app state", the local copy of that app-state collection drifted (this happened on the personal bridge; it also explains the e2e gate skipping app-state calls for account B). Repair: `POST /api/appstate/resync {"name":"regular_low"}` (`appstate_resync.go`), a whatsmeow full sync of that collection (cached state dropped, refetched). Names: regular, regular_low, regular_high, critical_block, critical_unblock_low. Archive uses regular_low.
+
