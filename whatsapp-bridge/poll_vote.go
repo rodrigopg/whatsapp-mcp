@@ -46,6 +46,26 @@ func validateVote(options []string, selectable int, chosen []string) ([]string, 
 	return out, nil
 }
 
+// pollCreatorJID is the poll creator as whatsmeow must see it. EncryptPollVote derives the key from the voter's
+// LID unless the creator is given as a phone-number JID, and the receiver derives it from the voter's address as
+// the vote arrives (a LID in LID-addressed chats), so a creator we only know as a phone number (the bridge stores
+// senders as numbers) is mapped back to its LID when the store knows it; otherwise the receiver cannot decrypt.
+func pollCreatorJID(client *whatsmeow.Client, senderUser string, fromMe bool) types.JID {
+	if fromMe {
+		if !client.Store.LID.IsEmpty() {
+			return client.Store.LID.ToNonAD()
+		}
+		return client.Store.ID.ToNonAD()
+	}
+	pn := types.JID{User: senderUser, Server: types.DefaultUserServer}
+	if client.Store.LIDs != nil {
+		if lid, err := client.Store.LIDs.GetLIDForPN(context.Background(), pn); err == nil && !lid.IsEmpty() {
+			return lid
+		}
+	}
+	return pn
+}
+
 // handlePollVote returns the handler for POST /api/poll_vote: cast (or retract, with no options) the
 // account's own vote in a poll this bridge has seen. The vote is also recorded locally, since own sends
 // do not echo back.
@@ -92,10 +112,7 @@ func handlePollVote(client *whatsmeow.Client, store *MessageStore) http.HandlerF
 			writeJSONError(w, http.StatusBadRequest, "poll message not found in local history")
 			return
 		}
-		creator := types.JID{User: sender.String, Server: types.DefaultUserServer}
-		if fromMe {
-			creator = client.Store.ID.ToNonAD()
-		}
+		creator := pollCreatorJID(client, sender.String, fromMe)
 		info := types.MessageInfo{MessageSource: types.MessageSource{Chat: chatJID, Sender: creator, IsFromMe: fromMe, IsGroup: chatJID.Server == types.GroupServer}, ID: req.MessageID}
 		ctx := context.Background()
 		msg, err := client.BuildPollVote(ctx, &info, chosen)
