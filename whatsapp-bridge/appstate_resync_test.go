@@ -31,11 +31,13 @@ func TestHandleAppStateResyncValidation(t *testing.T) {
 		method, body string
 		want         int
 	}{
-		"get":           {http.MethodGet, "", http.StatusMethodNotAllowed},
-		"bad json":      {http.MethodPost, "{", http.StatusBadRequest},
-		"no name":       {http.MethodPost, `{}`, http.StatusBadRequest},
-		"unknown name":  {http.MethodPost, `{"name":"everything"}`, http.StatusBadRequest},
-		"not connected": {http.MethodPost, `{"name":"regular_low"}`, http.StatusServiceUnavailable},
+		"get":                     {http.MethodGet, "", http.StatusMethodNotAllowed},
+		"bad json":                {http.MethodPost, "{", http.StatusBadRequest},
+		"no name":                 {http.MethodPost, `{}`, http.StatusBadRequest},
+		"unknown name":            {http.MethodPost, `{"name":"everything"}`, http.StatusBadRequest},
+		"unknown mode":            {http.MethodPost, `{"name":"regular_low","mode":"nuke"}`, http.StatusBadRequest},
+		"recovery, not connected": {http.MethodPost, `{"name":"regular_low","mode":"recovery"}`, http.StatusServiceUnavailable},
+		"not connected":           {http.MethodPost, `{"name":"regular_low"}`, http.StatusServiceUnavailable},
 	} {
 		rec := httptest.NewRecorder()
 		h(rec, httptest.NewRequest(c.method, "/api/appstate/resync", strings.NewReader(c.body)))
