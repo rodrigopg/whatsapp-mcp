@@ -460,6 +460,12 @@ class E2E(unittest.TestCase):
         self.assertEqual((code, d.get("success")), (200, True), d)
         code, d = post("a", "/leave_group", {"jid": gjid})
         self.assertEqual((code, d.get("success")), (200, True), d)
+        # The throwaway group must not pile up in the phones' chat lists: delete it on both accounts
+        # (the bridge only deletes a chat whose name starts with the prefix we give it).
+        for acct in ("b", "a"):
+            time.sleep(SEND_GAP)
+            code, d = post(acct, "/chat/delete", {"chat_jid": gjid, "expect_name_prefix": TAG, "forget_local": True})
+            self.assertEqual((code, d.get("success")), (200, True), (acct, d))
 
     # ---- 14 revoke (last, it deletes a message) ----------------------------------
     def test_14_revoke(self):

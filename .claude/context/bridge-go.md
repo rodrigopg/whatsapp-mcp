@@ -66,3 +66,8 @@ Additive tables created in `NewMessageStore` (each feature owns its schema strin
 - The summary is a stored photograph per day (`summaries`); announcing a closure clears `announce_pending`.
 - WhatsApp Favorites are mirrored from `events.AppState` (index `favorites`); `EmitAppStateEventsOnFullSync` is off, so a list that existed before pairing is picked up on its next change.
 - Local checks run in a Go container (no Go on the Mac): mount the repo, `go vet ./... && go test ./...`; `gofmt` also rewrites `webhook.go` (known nit), do not commit that.
+
+## Deleting a chat (e2e cleanup)
+
+`POST /api/chat/delete` (`chat_delete.go`) deletes a chat from WhatsApp through the `deleteChat` app-state patch (with the stored last message as range). It refuses unless the body carries `expect_name_prefix` and the chat's stored name starts with it, so a mistyped JID cannot delete a real conversation; `forget_local` also drops the local rows. REST only, no MCP tool on purpose (an AI client should not be able to delete chats). Used by the live gate to remove its `e2e-...` groups.
+
