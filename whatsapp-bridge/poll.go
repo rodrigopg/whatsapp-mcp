@@ -119,10 +119,12 @@ func recordPollVote(client *whatsmeow.Client, store *MessageStore, msg *events.M
 	pollID := msg.Message.GetPollUpdateMessage().GetPollCreationMessageKey().GetID()
 	var optsJSON string
 	if err := store.db.QueryRow(`SELECT options FROM polls WHERE id = ? AND chat_jid = ?`, pollID, chatJID).Scan(&optsJSON); err != nil {
-		return // poll not tracked locally
+		logger.Warnf("Poll vote from %s ignored: poll %s is not tracked in chat %s (%v)", voter, pollID, chatJID, err)
+		return
 	}
 	var options []string
 	if json.Unmarshal([]byte(optsJSON), &options) != nil {
+		logger.Warnf("Poll vote from %s ignored: poll %s has unreadable options", voter, pollID)
 		return
 	}
 	vote, err := client.DecryptPollVote(context.Background(), msg)
@@ -130,6 +132,7 @@ func recordPollVote(client *whatsmeow.Client, store *MessageStore, msg *events.M
 		logger.Warnf("Failed to decrypt poll vote for %s: %v", pollID, err)
 		return
 	}
+	logger.Infof("Poll vote from %s on %s: %d option(s)", voter, pollID, len(vote.GetSelectedOptions()))
 	selected, _ := json.Marshal(optionsForHashes(options, vote.GetSelectedOptions()))
 	if _, err := store.db.Exec(`INSERT OR REPLACE INTO poll_votes (poll_id, chat_jid, voter, selected, timestamp) VALUES (?, ?, ?, ?, ?)`,
 		pollID, chatJID, voter, string(selected), msg.Info.Timestamp); err != nil {
