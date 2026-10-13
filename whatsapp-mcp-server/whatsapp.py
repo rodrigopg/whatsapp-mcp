@@ -779,6 +779,25 @@ def matter_call(path: str, payload: dict) -> dict:
         return {"error": f"Request error: {str(e)}"}
 
 
+def vote_poll(chat_jid: str, message_id: str, options: List[str]) -> Tuple[bool, str]:
+    """Cast (or, with no options, retract) the account's own vote in a poll. The bridge validates the options."""
+    try:
+        if not chat_jid or not chat_jid.strip():
+            return False, "chat_jid is required"
+        if not message_id or not message_id.strip():
+            return False, "message_id is required"
+        response = _api_request("POST", "/poll_vote", json={"chat_jid": chat_jid, "message_id": message_id, "options": options})
+        try:
+            result = response.json()
+        except json.JSONDecodeError:
+            return False, f"Error parsing response: {response.text}"
+        if result.get("success"):
+            return True, "Vote sent"
+        return False, result.get("error") or result.get("message", "Unknown response")
+    except requests.RequestException as e:
+        return False, f"Request error: {str(e)}"
+
+
 def get_poll_votes(chat_jid: str, message_id: str) -> Tuple[bool, str, Optional[dict]]:
     try:
         if not chat_jid or not chat_jid.strip():

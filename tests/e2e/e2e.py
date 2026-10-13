@@ -89,6 +89,7 @@ MCP_TOOLS = {
     "suggest_favorites",
     "update_group_participants",
     "update_group_settings",
+    "vote_in_poll",
 }
 
 
@@ -309,12 +310,34 @@ class E2E(unittest.TestCase):
         question = f"{TAG} lunch?"
         code, d = post("a", "/poll", {"chat_jid": chat, "question": question, "options": ["pizza", "sushi"]})
         self.assertEqual((code, d.get("success")), (200, True), d)
+        poll_id = d["message_id"]
         self.assertTrue(eventually(lambda: find_msg("a", question, from_me=True)), "A did not store its poll")
         self.assertTrue(eventually(lambda: find_msg("b", question, from_me=False)), "B did not receive the poll")
-        code, d = post("a", "/poll_votes", {"chat_jid": chat, "message_id": d["message_id"]})
+        code, d = post("a", "/poll_votes", {"chat_jid": chat, "message_id": poll_id})
         self.assertEqual(code, 200, d)
         self.assertEqual(d.get("options"), ["pizza", "sushi"], d)
-        self.assertEqual(d.get("votes"), [], d)  # vote reading is unit-tested only (no vote route)
+        self.assertEqual(d.get("votes"), [], d)  # nobody has voted yet
+        # B votes, and A reads the tally; then B changes its mind (latest vote wins) and finally retracts.
+        b_chat = self.need("b_chat_a")
+
+        def vote(options):
+            time.sleep(SEND_GAP)
+            code, v = post("b", "/poll_vote", {"chat_jid": b_chat, "message_id": poll_id, "options": options})
+            self.assertEqual((code, v.get("success")), (200, True), v)
+
+        def tally_is(pizza, sushi):
+            def check():
+                c, t = post("a", "/poll_votes", {"chat_jid": chat, "message_id": poll_id})
+                return c == 200 and (t["tally"].get("pizza"), t["tally"].get("sushi")) == (pizza, sushi)
+            return check
+        vote(["pizza"])
+        self.assertTrue(eventually(tally_is(1, 0), timeout=40), "A did not see B's vote for pizza")
+        vote(["sushi"])
+        self.assertTrue(eventually(tally_is(0, 1), timeout=40), "B's changed vote did not replace the first one")
+        vote([])
+        self.assertTrue(eventually(tally_is(0, 0), timeout=40), "B's retracted vote still counted")
+        self.assertEqual(post("b", "/poll_vote", {"chat_jid": b_chat, "message_id": poll_id, "options": ["tacos"]})[0], 400)
+        self.assertEqual(post("b", "/poll_vote", {"chat_jid": b_chat, "message_id": poll_id, "options": ["pizza", "sushi"]})[0], 400)
         code, d = post("a", "/poll", {"chat_jid": chat, "question": question, "options": ["only one"]})
         self.assertEqual(code, 400, d)
 

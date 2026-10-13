@@ -335,6 +335,7 @@ Go WhatsApp Bridge (whatsapp-bridge/)
 | `reopen_matter` | Reopen a closed or expired matter when the conversation returns to it |
 | `mark_reviewed` | Advance the review cursor |
 | `send_contact` | Send a contact as a native contact card (vCard) |
+| `vote_in_poll` | Cast (or retract) your own vote in a poll |
 | `list_active_chats` | Who you talked to in a period (e.g. one day): one row per conversation with first/last time, count, last-message snippet and a link |
 | `get_chat` | Get info about a specific chat |
 | `get_direct_chat_by_contact` | Find a direct chat by phone number (LID-aware) |

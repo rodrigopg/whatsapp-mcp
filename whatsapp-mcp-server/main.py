@@ -31,6 +31,7 @@ from whatsapp import (
     send_contact as whatsapp_send_contact,
     matter_call as whatsapp_matter_call,
     get_poll_votes as whatsapp_get_poll_votes,
+    vote_poll as whatsapp_vote_poll,
     edit_message as whatsapp_edit_message,
     delete_message as whatsapp_delete_message,
     update_group_participants as whatsapp_update_group_participants,
@@ -658,6 +659,20 @@ def approve_chase_draft(draft_id: int, text: str) -> Dict[str, Any]:
 def discard_chase_draft(draft_id: int) -> Dict[str, Any]:
     """Discard a pending chase draft because the user does not want to send it. It is never sent later."""
     return whatsapp_matter_call("/drafts/discard", {"draft_id": draft_id})
+
+
+@write_tool
+def vote_in_poll(chat_jid: str, message_id: str, options: List[str]) -> Dict[str, Any]:
+    """Cast the user's own vote in a WhatsApp poll (or retract it by passing no options). Call it only for
+    a vote the user asked for. The latest vote replaces the previous one.
+
+    Args:
+        chat_jid: The chat the poll is in
+        message_id: The poll's message id (create_poll returns it; list_messages shows it)
+        options: The option names to vote for, exactly as in the poll (up to its limit); empty to retract
+    """
+    success, message = whatsapp_vote_poll(chat_jid, message_id, options)
+    return {"success": success, "message": message}
 
 
 @read_tool
