@@ -589,10 +589,12 @@ def download_media(message_id: str, chat_jid: str) -> Tuple[Optional[str], str]:
         chat_jid: The JID of the chat containing the message
 
     Returns:
-        A tuple of (file path or None, status message). The message carries the
-        reason on failure: the bridge already reports one, and collapsing every
-        failure mode into a bare None left the caller unable to tell an expired
-        media from a bad auth token from a bridge that is simply down.
+        A tuple of (file path or None, status message). On failure the message
+        is a short, status-based reason (expired media, bad auth token, not
+        found, bridge down) so the caller can tell them apart. It never echoes
+        the bridge's raw error text: that can carry server paths, and this
+        message is returned to MCP clients, including over the remote HTTP
+        transport. The raw detail goes to the log instead.
     """
     try:
         url = f"{WHATSAPP_API_BASE_URL}/download"
@@ -603,37 +605,39 @@ def download_media(message_id: str, chat_jid: str) -> Tuple[Optional[str], str]:
 
         response = requests.post(url, json=payload, headers=_auth_headers(), timeout=MEDIA_TIMEOUT)
 
-        if response.status_code == 200:
+        try:
             result = response.json()
-            if result.get("success", False):
-                path = result.get("path")
-                logger.info("Media downloaded successfully: %s", path)
-                return path, "Media downloaded successfully"
-            else:
-                reason = result.get('message', 'Unknown error')
-                logger.warning("Download failed: %s", reason)
-                return None, reason
-        elif response.status_code == 401:
-            reason = (
+        except ValueError:
+            result = None
+        if not isinstance(result, dict):
+            result = {}
+
+        if response.status_code == 200 and result.get("success", False):
+            path = result.get("path")
+            logger.info("Media downloaded successfully: %s", path)
+            return path, "Media downloaded successfully"
+
+        logger.warning(
+            "Download failed: HTTP %s - %s", response.status_code,
+            result.get("message") or response.text,
+        )
+        if response.status_code == 401:
+            return None, (
                 "HTTP 401 - check WHATSAPP_API_AUTH_TOKEN matches the bridge's "
-                f"API_AUTH_TOKEN ({response.text})"
+                "API_AUTH_TOKEN"
             )
-            logger.warning("Download auth error: %s", reason)
-            return None, reason
-        else:
-            reason = f"HTTP {response.status_code} - {response.text}"
-            logger.warning("Download error: %s", reason)
-            return None, reason
+        if response.status_code == 404:
+            return None, "Media not found (HTTP 404)"
+        if result.get("reason") == "media_gone":
+            return None, "Media is no longer available on WhatsApp's servers"
+        return None, "Download failed"
 
     except requests.RequestException as e:
         logger.warning("Download request error: %s", e)
-        return None, f"Request error: {str(e)}"
-    except json.JSONDecodeError:
-        logger.warning("Error parsing download response: %s", response.text)
-        return None, f"Error parsing response: {response.text}"
+        return None, "Bridge unreachable"
     except Exception as e:
         logger.warning("Unexpected download error: %s", e)
-        return None, f"Unexpected error: {str(e)}"
+        return None, "Download failed"
 
 
 def create_group(
