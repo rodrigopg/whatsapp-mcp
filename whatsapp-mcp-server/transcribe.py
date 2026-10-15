@@ -123,10 +123,18 @@ def _is_expired(ts):
     return datetime.now(timezone.utc) - dt > CDN_EXPIRY
 
 
+# Audio you sent yourself is not transcribed unless TRANSCRIBE_OUTGOING=1: with
+# a cloud engine that would ship voice notes off the machine that the user never
+# asked to transcribe.
+TRANSCRIBE_OUTGOING = os.environ.get("TRANSCRIBE_OUTGOING", "") == "1"
+
+
 def pending_audios(conn, limit=None):
     sql = ("SELECT id, chat_jid, hex(file_sha256), timestamp FROM messages "
-           "WHERE media_type='audio' AND (content IS NULL OR content='') "
-           "ORDER BY timestamp DESC")
+           "WHERE media_type='audio' AND (content IS NULL OR content='') ")
+    if not TRANSCRIBE_OUTGOING:
+        sql += "AND COALESCE(is_from_me, 0) = 0 "
+    sql += "ORDER BY timestamp DESC"
     if limit:
         sql += f" LIMIT {int(limit)}"
     return conn.execute(sql).fetchall()

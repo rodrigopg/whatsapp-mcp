@@ -96,9 +96,9 @@ class SweepMarkerTest(unittest.TestCase):
         self.db = os.path.join(self.tmp.name, "messages.db")
         conn = sqlite3.connect(self.db)
         conn.execute("CREATE TABLE messages (id TEXT, chat_jid TEXT, content TEXT, "
-                     "timestamp TEXT, media_type TEXT, file_sha256 BLOB)")
+                     "timestamp TEXT, media_type TEXT, file_sha256 BLOB, is_from_me BOOLEAN)")
         old = (datetime.now(timezone.utc) - transcribe.CDN_EXPIRY - timedelta(days=5)).isoformat()
-        conn.execute("INSERT INTO messages VALUES ('OLDAUDIO', 'chat@s.whatsapp.net', '', ?, 'audio', NULL)",
+        conn.execute("INSERT INTO messages VALUES ('OLDAUDIO', 'chat@s.whatsapp.net', '', ?, 'audio', NULL, 0)",
                      (old,))
         conn.commit()
         conn.close()
