@@ -254,6 +254,12 @@ class TestApiEngine(TTSTestCase):
         self.assertFalse(ok)
         self.assertTrue(reason.startswith("TTS not configured"), reason)
 
+    def test_api_base_must_be_https_except_localhost(self):
+        for base, ok in [("http://tts.example.com/v1", False), ("https://tts.example.com/v1", True),
+                         ("http://127.0.0.1:8000/v1", True), ("http://localhost:8000/v1", True)]:
+            with patch.multiple(tts, TTS_ENGINE="api", TTS_API_KEY="sk-test-123", TTS_API_BASE=base):
+                self.assertEqual(tts.engine_ready()[0], ok, base)
+
     def test_api_defaults(self):
         env = {k: v for k, v in os.environ.items() if not k.startswith("TTS_")}
         out = subprocess.run(

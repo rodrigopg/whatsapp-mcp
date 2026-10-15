@@ -17,6 +17,7 @@ import os
 import shutil
 import subprocess
 import tempfile
+from urllib.parse import urlparse
 
 import requests
 
@@ -61,6 +62,9 @@ def engine_ready():
     if TTS_ENGINE == "api":
         if not TTS_API_KEY:
             return False, "TTS not configured: api engine needs TTS_API_KEY"
+        base = urlparse(TTS_API_BASE)
+        if base.scheme != "https" and not (base.scheme == "http" and base.hostname in ("localhost", "127.0.0.1", "::1")):
+            return False, "TTS not configured: TTS_API_BASE must be https (http is only allowed for localhost)"
         if not shutil.which("ffmpeg"):
             return False, "TTS not configured: ffmpeg not found"
         return True, "api"
