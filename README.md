@@ -96,6 +96,10 @@ How it stays private: the AI client you already use (Claude Code) is the one tha
 
 Also new: `list_active_chats` ("who did I talk to on that day?", one row per conversation with a snippet and a link) and `send_contact` (a native contact card).
 
+### Voice dataset
+
+`/whats:clone` builds a voice-cloning / TTS fine-tuning dataset from **your own** sent voice notes (24 kHz mono wavs, transcripts from the bridge's transcription sweep, a `train_raw.jsonl` and an LJSpeech-style `metadata.csv`). Only `is_from_me` audio is read, everything stays local. See `commands/clone.md`.
+
 ### Configuration
 - `WHATSAPP_BRIDGE_PORT` env var — change the REST API port (default `8080`)
 - `WHATSAPP_API_BASE_URL` env var — point the Python MCP server at a non-default bridge URL
