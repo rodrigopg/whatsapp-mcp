@@ -1,6 +1,39 @@
-# WhatsApp MCP Server
+# WhatsApp para o Claude
 
 [![CI](https://github.com/rodrigopg/whatsapp-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/rodrigopg/whatsapp-mcp/actions/workflows/ci.yml)
+
+**Seu WhatsApp dentro do Claude (ou ChatGPT).** Peça "o que ficou pendente hoje?" ou "responde o João que eu chego às 15h".
+
+## O que faz
+
+- Lê e busca suas conversas, áudios (transcreve) e arquivos
+- Envia mensagens, áudios e arquivos, em contatos e grupos
+- Mostra o que ficou **pendente**: quem te cobrou e o que você prometeu
+- Resumo da manhã: só o que precisa da sua ação hoje
+- Cria o conjunto de dados da **sua voz** para clonar (`/whatsapp-mcp:clone`)
+
+## Instalar (Claude Code)
+
+```
+/plugin marketplace add rodrigopg/claude-plugins
+/plugin install whatsapp-mcp@rodrigopg
+/whatsapp-mcp:setup
+```
+
+O `setup` guia o resto: instala, mostra um QR code e você escaneia com o celular (Aparelhos conectados). Pronto.
+
+## Seguro?
+
+- Suas mensagens ficam **no seu computador** (banco local). Só vão para a IA quando você pede.
+- Uma mensagem maliciosa pode tentar enganar a IA ("prompt injection"). Para acesso remoto, use o modo somente leitura (`MCP_READONLY=true`).
+- Projeto independente, código aberto, não é do WhatsApp/Meta. Use por sua conta e risco.
+
+Ajuda: abra uma [issue](https://github.com/rodrigopg/whatsapp-mcp/issues). Segurança: [SECURITY.md](SECURITY.md).
+
+---
+
+<details>
+<summary><b>Parte técnica (nerd / para I.A. ler) — English, documentação completa</b></summary>
 
 > Independent, maintained project originally based on [lharries/whatsapp-mcp](https://github.com/lharries/whatsapp-mcp).
 
@@ -385,3 +418,5 @@ CI runs the Go build/vet/tests and the Python unit tests on every PR. Changes th
 - Originally based on [lharries/whatsapp-mcp](https://github.com/lharries/whatsapp-mcp) by Luke Harries (MIT)
 - WhatsApp web protocol library: [whatsmeow](https://github.com/tulir/whatsmeow)
 - PRs cherry-picked from: #209 (coucaj), #221 (fpto), #239 (jayeshkaithwas), #244 (realitix)
+
+</details>
