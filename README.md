@@ -72,6 +72,8 @@ Voice messages are stored with empty searchable text by default. Enable transcri
 
 Optional: `TRANSCRIPTION_PROMPT` biases both engines toward correct punctuation and domain terms.
 
+Voice notes **you sent** are skipped by default (an API engine would otherwise upload audio you never asked to transcribe). Set `TRANSCRIBE_OUTGOING=1` to include them, e.g. for `/whats:clone`, which reads transcripts of your own audio.
+
 **Where these vars must live** depends on how the bridge starts — the 5-minute sweep inherits the bridge process's environment, *not* your interactive shell's:
 - **`go run main.go` / running `./whatsapp-bridge` by hand** — `export` them in the same shell first, or prefix the command.
 - **`start-bridge.sh` (from `install.sh`) or macOS launchd auto-start** — `export` in your shell will **not** reach launchd. Instead create `~/.whatsapp-mcp/transcription.env` with the vars (one `export VAR=value` per line); `start-bridge.sh` sources it, so both the manual launcher and launchd pick them up.
