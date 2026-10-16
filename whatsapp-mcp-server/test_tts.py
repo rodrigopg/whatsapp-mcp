@@ -260,6 +260,14 @@ class TestApiEngine(TTSTestCase):
             with patch.multiple(tts, TTS_ENGINE="api", TTS_API_KEY="sk-test-123", TTS_API_BASE=base):
                 self.assertEqual(tts.engine_ready()[0], ok, base)
 
+    def test_timeout_env(self):
+        out = subprocess.run(
+            [sys.executable, "-c", "import tts; print(tts.TTS_TIMEOUT)"],
+            capture_output=True, text=True, env={**os.environ, "TTS_TIMEOUT": "300"},
+            cwd=os.path.dirname(os.path.abspath(__file__)),
+        )
+        self.assertEqual(out.stdout.strip(), "300")
+
     def test_api_defaults(self):
         env = {k: v for k, v in os.environ.items() if not k.startswith("TTS_")}
         out = subprocess.run(

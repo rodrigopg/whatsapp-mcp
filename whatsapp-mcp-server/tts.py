@@ -40,7 +40,7 @@ TTS_API_VOICE = os.environ.get("TTS_API_VOICE", "alloy")
 
 # OpenAI's input limit; longer text is refused, never truncated.
 MAX_TTS_CHARS = 4096
-TTS_TIMEOUT = 120
+TTS_TIMEOUT = int(os.environ.get("TTS_TIMEOUT", "120"))  # seconds; raise for slow CPU-only local voices
 
 
 class TTSError(Exception):
