@@ -404,7 +404,7 @@ Go WhatsApp Bridge (whatsapp-bridge/)
 | `get_contact_chats` | All chats involving a contact |
 | `get_last_interaction` | Most recent message with a contact |
 | `get_message_context` | Messages around a specific message |
-| `send_message` | Send a text message, optionally as a native reply quoting a stored text message |
+| `send_message` | Send a text message, optionally as a native reply quoting a stored text message and/or @-mentioning people |
 | `send_file` | Send image, video, document, or audio file |
 | `send_audio_message` | Send audio as a WhatsApp voice message |
 | `send_voice_message` | Convert text to speech and send it as a voice message, with an optional `notice` text sent just before it (opt-in, see [Voice messages from text](#voice-messages-from-text-opt-in)) |

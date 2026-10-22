@@ -228,7 +228,8 @@ def get_message_context(
 def send_message(
     recipient: str,
     message: str,
-    reply_to_message_id: str = ""
+    reply_to_message_id: str = "",
+    mentions: Optional[List[str]] = None
 ) -> Dict[str, Any]:
     """Send a WhatsApp message to a person or group. For group chats use the JID.
 
@@ -238,6 +239,9 @@ def send_message(
         message: The message text to send
         reply_to_message_id: Optional ID of a text message in the same chat to quote, so it is
                  sent as a native reply
+        mentions: Optional user JIDs to @-mention, as returned by get_group_info or resolve_contact.
+                 Write each one in message as @ plus the part before the @ of its JID
+                 (e.g. "@123456789" for "123456789@lid")
     
     Returns:
         A dictionary containing success status and a status message
@@ -250,7 +254,7 @@ def send_message(
         }
     
     # Call the whatsapp_send_message function with the unified recipient parameter
-    success, status_message = whatsapp_send_message(recipient, message, reply_to_message_id=reply_to_message_id)
+    success, status_message = whatsapp_send_message(recipient, message, reply_to_message_id=reply_to_message_id, mentions=mentions)
     return {
         "success": success,
         "message": status_message

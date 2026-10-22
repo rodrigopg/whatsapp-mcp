@@ -353,14 +353,15 @@ type SendMessageResponse struct {
 
 // SendMessageRequest represents the request body for the send message API
 type SendMessageRequest struct {
-	Recipient        string `json:"recipient"`
-	Message          string `json:"message"`
-	MediaPath        string `json:"media_path,omitempty"`
-	ReplyToMessageID string `json:"reply_to_message_id,omitempty"`
+	Recipient        string   `json:"recipient"`
+	Message          string   `json:"message"`
+	MediaPath        string   `json:"media_path,omitempty"`
+	ReplyToMessageID string   `json:"reply_to_message_id,omitempty"`
+	Mentions         []string `json:"mentions,omitempty"`
 }
 
 // Function to send a WhatsApp message
-func sendWhatsAppMessage(client *whatsmeow.Client, messageStore *MessageStore, recipient string, message string, mediaPath string, replyTo string) (bool, string) {
+func sendWhatsAppMessage(client *whatsmeow.Client, messageStore *MessageStore, recipient string, message string, mediaPath string, replyTo string, mentions []string) (bool, string) {
 	if !client.IsConnected() {
 		return false, "Not connected to WhatsApp"
 	}
@@ -529,6 +530,12 @@ func sendWhatsAppMessage(client *whatsmeow.Client, messageStore *MessageStore, r
 		msg.Conversation = proto.String(message)
 	}
 
+	if len(mentions) > 0 {
+		if err := withMentions(msg, message, mentions); err != nil {
+			return false, err.Error()
+		}
+	}
+
 	// Send message
 	resp, err := client.SendMessage(context.Background(), recipientJID, msg)
 
@@ -551,6 +558,9 @@ func sendWhatsAppMessage(client *whatsmeow.Client, messageStore *MessageStore, r
 			fmt.Printf("Failed to persist outbound: %v\n", storeErr)
 		} else {
 			_ = messageStore.TouchChatLastMessageTime(chatJID, resp.Timestamp)
+			if err := storeMentions(messageStore.db, chatJID, resp.ID, mentions); err != nil {
+				client.Log.Warnf("Failed to persist outbound mentions: %v", err)
+			}
 		}
 	}
 
@@ -3196,11 +3206,15 @@ img{border:8px solid white;border-radius:8px;box-shadow:0 4px 20px rgba(0,0,0,.2
 			http.Error(w, "reply_to_message_id is only supported for text messages", http.StatusBadRequest)
 			return
 		}
+		if len(req.Mentions) > 0 && req.MediaPath != "" {
+			http.Error(w, "mentions are only supported for text messages", http.StatusBadRequest)
+			return
+		}
 
 		fmt.Println("Received request to send message", req.Message, req.MediaPath)
 
 		// Send the message
-		success, message := sendWhatsAppMessage(client, messageStore, req.Recipient, req.Message, req.MediaPath, req.ReplyToMessageID)
+		success, message := sendWhatsAppMessage(client, messageStore, req.Recipient, req.Message, req.MediaPath, req.ReplyToMessageID, req.Mentions)
 		fmt.Println("Message sent", success, message)
 		// Set response headers
 		w.Header().Set("Content-Type", "application/json")

@@ -2,9 +2,13 @@ package main
 
 import (
 	"database/sql"
+	"errors"
+	"regexp"
 	"strings"
 
 	waProto "go.mau.fi/whatsmeow/proto/waE2E"
+	"go.mau.fi/whatsmeow/types"
+	"google.golang.org/protobuf/proto"
 )
 
 // Who each message @-mentions. In a group only a message that mentions the
@@ -46,6 +50,43 @@ func storeMentions(db *sql.DB, chat, messageID string, jids []string) error {
 			return err
 		}
 	}
+	return nil
+}
+
+var mentionToken = regexp.MustCompile(`@([0-9]+)\b`)
+
+// withMentions makes a text message @-mention jids. Each must be a user JID
+// (phone or LID) whose number appears in text as @<number>: WhatsApp shows that
+// token as the person's name, and without it the person would be notified by a
+// mention nobody reading the chat can see.
+func withMentions(msg *waProto.Message, text string, jids []string) error {
+	inText := make(map[string]bool)
+	for _, m := range mentionToken.FindAllStringSubmatch(text, -1) {
+		inText[m[1]] = true
+	}
+	var unique []string
+	seen := make(map[string]bool)
+	for _, raw := range jids {
+		jid, err := types.ParseJID(raw)
+		if err != nil || jid.ToNonAD().String() != raw || (jid.Server != types.DefaultUserServer && jid.Server != types.HiddenUserServer) {
+			return errors.New("mentions must be user JIDs, as returned by get_group_info or resolve_contact")
+		}
+		if !inText[jid.User] {
+			return errors.New("each mentioned JID needs @<its number> in the message text")
+		}
+		if !seen[raw] {
+			seen[raw] = true
+			unique = append(unique, raw)
+		}
+	}
+	if msg.GetExtendedTextMessage() == nil {
+		msg.ExtendedTextMessage = &waProto.ExtendedTextMessage{Text: proto.String(text)}
+		msg.Conversation = nil
+	}
+	if msg.ExtendedTextMessage.ContextInfo == nil {
+		msg.ExtendedTextMessage.ContextInfo = &waProto.ContextInfo{}
+	}
+	msg.ExtendedTextMessage.ContextInfo.MentionedJID = unique
 	return nil
 }
 

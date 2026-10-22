@@ -205,7 +205,7 @@ func registerDraftRoutes(store *MessageStore, client *whatsmeow.Client) {
 	}))
 	http.HandleFunc("/api/drafts/approve", matterRoute(func(r ApproveDraftRequest) (APIDraft, error) {
 		return approveDraft(db, r, func(chat, text string) (bool, string) {
-			return sendWhatsAppMessage(client, store, chat, text, "", "")
+			return sendWhatsAppMessage(client, store, chat, text, "", "", nil)
 		}, time.Now())
 	}))
 	http.HandleFunc("/api/drafts/discard", matterRoute(func(r DiscardDraftRequest) (APIDraft, error) {
