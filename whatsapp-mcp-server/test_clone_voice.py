@@ -26,6 +26,11 @@ class RowsTest(unittest.TestCase):
         self.assertTrue(clone_voice.PLACEHOLDER.match("[audio]"))
         self.assertFalse(clone_voice.PLACEHOLDER.match("ola tudo bem"))
 
+    def test_min_chars_is_configurable(self):
+        self.assertFalse(clone_voice.usable_text("你好，谢谢你", 8))
+        self.assertTrue(clone_voice.usable_text("你好，谢谢你", 4))
+        self.assertFalse(clone_voice.usable_text("[audio]", 1))
+
 
 if __name__ == "__main__":
     unittest.main()

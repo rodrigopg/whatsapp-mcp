@@ -20,7 +20,7 @@ cd whatsapp-mcp-server
 uv run --with imageio-ffmpeg python clone_voice.py --store <store> --out ~/voice-dataset --max-sec 25
 ```
 
-Options: `--since 2025-01-01` (recent voice = better match to current voice), `--chat <jid>`, `--limit N`, `--min-sec`. `imageio-ffmpeg` brings a static ffmpeg; set `FFMPEG=/path` to use another.
+Options: `--since 2025-01-01` (recent voice = better match to current voice), `--chat <jid>`, `--limit N`, `--min-sec`, `--min-rate`/`--max-rate` (transcript chars per second, default 6–28) and `--min-chars` (default 8); lower or widen them for languages whose script is much denser or sparser. `imageio-ffmpeg` brings a static ffmpeg; set `FFMPEG=/path` to use another.
 
 The script keeps clips of 2-25 s whose transcript already exists (the bridge's transcription sweep) and whose characters-per-second is plausible, converts them to 24 kHz mono 16-bit wav, and writes:
 
