@@ -51,9 +51,8 @@ def _bridge_auth_headers():
 # --- Transcription engine configuration (all via env so the repo is portable) ---
 #
 # Engine selection: TRANSCRIPTION_ENGINE = "local" (whisper.cpp) | "api" (OpenAI/Groq).
-# Defaults reproduce the original author's local setup exactly, so an existing
-# install keeps working with no env changes. A fresh clone with neither engine
-# configured does nothing (see engine_ready / main) rather than marking audios.
+# A clone with neither engine configured does nothing (see engine_ready / main)
+# rather than marking audios.
 TRANSCRIPTION_ENGINE = os.environ.get("TRANSCRIPTION_ENGINE", "local").lower()
 
 # Local backend (whisper.cpp)
@@ -70,11 +69,17 @@ TRANSCRIPTION_API_BASE = os.environ.get("TRANSCRIPTION_API_BASE", "https://api.o
 TRANSCRIPTION_API_MODEL = os.environ.get("TRANSCRIPTION_API_MODEL", "whisper-1")
 API_MAX_BYTES = 25 * 1024 * 1024  # OpenAI endpoint hard limit
 
-# Shared prompt — biases both engines toward correct punctuation. Override with TRANSCRIPTION_PROMPT (e.g. domain terms).
+# Language of the voice notes for both engines: an ISO-639-1 code ("pt", "en", ...)
+# or "auto" to let Whisper detect it per audio.
+TRANSCRIPTION_LANGUAGE = os.environ.get("TRANSCRIPTION_LANGUAGE", "").strip().lower() or "pt"
+
+# Optional shared prompt — biases both engines toward correct punctuation and domain
+# terms. Write it in the audios' language; a prompt in another language skews the output.
 WHISPER_PROMPT = os.environ.get(
     "TRANSCRIPTION_PROMPT",
     "A seguir, a transcrição de um áudio. A transcrição deve ser precisa, com "
-    "pontuação e capitalização corretas.",
+    "pontuação e capitalização corretas."
+    if TRANSCRIPTION_LANGUAGE == "pt" else "",
 )
 
 
@@ -163,6 +168,22 @@ def transcribe(ogg_path, message_id):
     return _transcribe_local(ogg_path, message_id)
 
 
+def _whisper_cli_cmd(wav, out_base):
+    cmd = [WHISPER_CLI, "-m", WHISPER_MODEL, "-l", TRANSCRIPTION_LANGUAGE, "-oj", "-of", out_base, "-f", wav]
+    if WHISPER_PROMPT:
+        cmd += ["--prompt", WHISPER_PROMPT]
+    return cmd + DECODING_OPTS
+
+
+def _api_form_data():
+    data = {"model": TRANSCRIPTION_API_MODEL}
+    if TRANSCRIPTION_LANGUAGE != "auto":
+        data["language"] = TRANSCRIPTION_LANGUAGE
+    if WHISPER_PROMPT:
+        data["prompt"] = WHISPER_PROMPT
+    return data
+
+
 def _transcribe_local(ogg_path, message_id):
     """ffmpeg -> wav -> whisper-cli -> text. Unique temp names per message."""
     tmpdir = tempfile.mkdtemp(prefix=f"wa_tx_{message_id}_")
@@ -172,9 +193,7 @@ def _transcribe_local(ogg_path, message_id):
         subprocess.run(["ffmpeg", "-i", ogg_path, "-ar", "16000", "-ac", "1",
                         "-c:a", "pcm_s16le", "-y", wav],
                        check=True, capture_output=True)
-        cmd = [WHISPER_CLI, "-m", WHISPER_MODEL, "-l", "pt", "-oj", "-of", out_base,
-               "-f", wav, "--prompt", WHISPER_PROMPT] + DECODING_OPTS
-        subprocess.run(cmd, check=True, capture_output=True)
+        subprocess.run(_whisper_cli_cmd(wav, out_base), check=True, capture_output=True)
         with open(out_base + ".json", encoding="utf-8") as f:
             data = json.load(f)
         text = (data.get("text") or "").strip()
@@ -229,7 +248,7 @@ def _transcribe_api(ogg_path):
                 f"{TRANSCRIPTION_API_BASE}/audio/transcriptions",
                 headers={"Authorization": f"Bearer {TRANSCRIPTION_API_KEY}"},
                 files={"file": (os.path.basename(ogg_path), f, "audio/ogg")},
-                data={"model": TRANSCRIPTION_API_MODEL, "language": "pt", "prompt": WHISPER_PROMPT},
+                data=_api_form_data(),
                 timeout=120,
             )
         # A rejected key fails every audio identically — don't loop on it forever.

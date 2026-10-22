@@ -87,5 +87,61 @@ class EngineReadyTest(unittest.TestCase):
         self.assertIn("WHISPER_CLI", reason)
 
 
+
+class LanguageAndPromptTest(unittest.TestCase):
+    def _patch(self, language, prompt):
+        for name, value in (("TRANSCRIPTION_LANGUAGE", language), ("WHISPER_PROMPT", prompt)):
+            patcher = unittest.mock.patch.object(transcribe, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def test_auto_lets_whisper_detect(self):
+        self._patch("auto", "")
+        cmd = transcribe._whisper_cli_cmd("a.wav", "out")
+        self.assertEqual(cmd[cmd.index("-l") + 1], "auto")
+        self.assertNotIn("--prompt", cmd)
+        self.assertEqual(transcribe._api_form_data(), {"model": transcribe.TRANSCRIPTION_API_MODEL})
+
+    def test_configured_language_and_prompt_reach_both_engines(self):
+        self._patch("en", "Meeting notes.")
+        cmd = transcribe._whisper_cli_cmd("a.wav", "out")
+        self.assertEqual(cmd[cmd.index("-l") + 1], "en")
+        self.assertEqual(cmd[cmd.index("--prompt") + 1], "Meeting notes.")
+        data = transcribe._api_form_data()
+        self.assertEqual(data["language"], "en")
+        self.assertEqual(data["prompt"], "Meeting notes.")
+
+    def test_env_is_read_and_normalised(self):
+        import os, subprocess, sys
+        here = os.path.dirname(os.path.abspath(__file__))
+        probe = "import transcribe as t; print(repr((t.TRANSCRIPTION_LANGUAGE, t.WHISPER_PROMPT)))"
+
+        def read(**env):
+            clean = {k: v for k, v in os.environ.items()
+                     if k not in ("TRANSCRIPTION_LANGUAGE", "TRANSCRIPTION_PROMPT")}
+            out = subprocess.run([sys.executable, "-c", probe], cwd=here, env={**clean, **env},
+                                 capture_output=True, text=True, check=True)
+            return out.stdout.strip()
+
+        portuguese_prompt = (
+            "A seguir, a transcrição de um áudio. A transcrição deve ser precisa, com "
+            "pontuação e capitalização corretas."
+        )
+        cases = [
+            ({}, ("pt", portuguese_prompt)),
+            ({"TRANSCRIPTION_LANGUAGE": "  "}, ("pt", portuguese_prompt)),
+            ({"TRANSCRIPTION_LANGUAGE": " PT "}, ("pt", portuguese_prompt)),
+            ({"TRANSCRIPTION_LANGUAGE": "auto"}, ("auto", "")),
+            ({"TRANSCRIPTION_LANGUAGE": "en"}, ("en", "")),
+            ({"TRANSCRIPTION_LANGUAGE": " PT ", "TRANSCRIPTION_PROMPT": "Olá."}, ("pt", "Olá.")),
+            ({"TRANSCRIPTION_LANGUAGE": "en", "TRANSCRIPTION_PROMPT": "Meeting notes."}, ("en", "Meeting notes.")),
+            ({"TRANSCRIPTION_PROMPT": ""}, ("pt", "")),
+            ({"TRANSCRIPTION_LANGUAGE": "pt", "TRANSCRIPTION_PROMPT": ""}, ("pt", "")),
+        ]
+        for env, expected in cases:
+            with self.subTest(env=env):
+                self.assertEqual(read(**env), repr(expected))
+
+
 if __name__ == "__main__":
     unittest.main()
