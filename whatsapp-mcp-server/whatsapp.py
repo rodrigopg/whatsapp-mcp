@@ -385,7 +385,7 @@ def get_last_interaction(jid: str) -> str:
     if result is None:
         return None
 
-    # interfaces.md documents this endpoint two ways (`formatted` string vs raw
+    # The endpoint has been described two ways (`formatted` string vs raw
     # `message` object); accept either so a mismatch with the bridge implementation
     # doesn't silently break this call.
     if "formatted" in result and result.get("formatted") is not None:

@@ -6,6 +6,9 @@ whatsapp-bridge/bridge.log
 whatsapp-bridge/whatsapp-bridge
 whatsapp-bridge/whatsapp-client
 whatsapp-bridge/transcription.env
+# install.sh writes these at the clone root
+/transcription.env
+/bridge.log
 whatsapp-bridge-personal/
 
 # systemd EnvironmentFile (sem export, contém Groq key)

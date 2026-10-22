@@ -17,7 +17,7 @@ Bridge Go (`whatsapp-bridge/main.go`) — conecta ao WhatsApp via whatsmeow, exp
 - 9 endpoints somam-se aos de escrita já existentes: `/api/chats`, `/api/messages`,
   `/api/message_context`, `/api/contacts/search`, `/api/contacts/chats`,
   `/api/contacts/last_interaction`, `/api/chat`, `/api/chat/by_contact`, `/api/sender_name`.
-  Contrato completo em `.reversa/_reversa_forward/mcp-remote-hardening/interfaces.md`.
+  Contrato: os handlers em `whatsapp-bridge/main.go`.
 - Motivo de existirem: o MCP Python lia esses dados via SQLite local direto; isso só funciona
   quando MCP e bridge rodam na mesma máquina. Bridge remota (VPS) exige que essas leituras
   também sejam REST — MCP server hoje é 100% stateless (ver `mcp-python.md`).

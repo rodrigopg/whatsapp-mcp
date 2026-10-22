@@ -52,10 +52,10 @@ cd whatsapp-mcp-server && python3 -m unittest test_transcribe -v
 # serviço (macOS launchd)
 launchctl print gui/$(id -u)/com.whatsapp-mcp.bridge          # status
 launchctl kickstart -k gui/$(id -u)/com.whatsapp-mcp.bridge    # reiniciar
-tail -f whatsapp-bridge/bridge.log
+tail -f <INSTALL_DIR>/bridge.log      # log do plist gerado pelo install.sh
 
 # transcrição manual (set -a propaga pro subprocesso; source sozinho não)
-cd whatsapp-mcp-server && set -a && source ../whatsapp-bridge/transcription.env && set +a
+cd whatsapp-mcp-server && set -a && source <INSTALL_DIR>/transcription.env && set +a
 python3 transcribe.py            # backfill
-WHATSAPP_BRIDGE_LOG=../whatsapp-bridge/bridge.log python3 recover_audios.py
+WHATSAPP_BRIDGE_LOG=<INSTALL_DIR>/bridge.log python3 recover_audios.py
 ```

@@ -40,8 +40,7 @@ search_contacts, list_messages, list_chats, list_active_chats, list_matters, rev
 
 `/api/chats`, `/api/messages`, `/api/message_context`, `/api/contacts/search`,
 `/api/contacts/chats`, `/api/contacts/last_interaction`, `/api/chat`, `/api/chat/by_contact`,
-`/api/sender_name` — implementados em `main.go`, contrato documentado em
-`.reversa/_reversa_forward/mcp-remote-hardening/interfaces.md`. Timestamps vêm com offset
+`/api/sender_name` — implementados em `main.go`, que é o contrato. Timestamps vêm com offset
 explícito (ex. `-03:00`), não `Z` — `_parse_ts()` em `whatsapp.py` trata os dois formatos, mas
 não depender de `Z` sendo enviado.
 

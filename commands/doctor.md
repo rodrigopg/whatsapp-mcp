@@ -6,7 +6,7 @@ Diagnose the WhatsApp MCP setup. Read-only — never restart services, rewrite c
 
 ## 1. Enumerate configured accounts
 
-Read `~/.claude.json`, list every `mcpServers` key starting with `whatsapp`. For each, extract `command`, `args` (the `--directory` value), and `env` (`WHATSAPP_API_BASE_URL`, `WHATSAPP_API_AUTH_TOKEN` if present).
+Read `~/.claude.json`, list every `mcpServers` key starting with `whatsapp`. For each, extract `command`, `args` (the `--directory` value), and `env` (`WHATSAPP_API_BASE_URL`, `WHATSAPP_API_AUTH_TOKEN` if present). The server's base URL is `WHATSAPP_API_BASE_URL` if set, else `http://localhost:8080/api`; use that as `<WHATSAPP_API_BASE_URL>` below.
 
 No `whatsapp*` keys found → report "No WhatsApp MCP server configured — run `/whats:setup`" and stop here.
 
@@ -15,10 +15,10 @@ No `whatsapp*` keys found → report "No WhatsApp MCP server configured — run 
 For each configured server, in order:
 
 **a. Install dir exists and has a compiled bridge**
-Check `<--directory>/../whatsapp-bridge/whatsapp-bridge` (or the equivalent path from `WHATSAPP_API_BASE_URL`'s install layout) exists and is executable. Missing → "bridge never built, run install.sh".
+Run b first. If the bridge answers over HTTP, it is built and running wherever it lives (local, remote, or behind an SSH tunnel on localhost); skip this check. Only if it does not answer: check `<--directory>/../whatsapp-bridge/whatsapp-bridge` exists and is executable. Missing → "bridge never built, run install.sh" (for a bridge meant to run on another host, say the host or tunnel is unreachable instead).
 
 **b. Bridge process reachable**
-`curl -s -o /dev/null -w "%{http_code}" <WHATSAPP_API_BASE_URL>/qr` (or `/chats` with a POST body `{}` if auth is required — see below). Connection refused/timeout → bridge not running or wrong port. Distinguish these two: `pgrep -fa whatsapp-bridge` tells you if a process exists at all locally; if it does but the port doesn't answer, that's the silent-bind-failure pattern (bridge started before its network interface was ready) — check `ss -tln | grep <port>` and the bridge's own log (`bridge.log` in its install dir) for `bind: cannot assign requested address`.
+`curl -s -o /dev/null -w "%{http_code}" <WHATSAPP_API_BASE_URL without /api>/qr` (or `/chats` with a POST body `{}` if auth is required — see below). Connection refused/timeout → bridge not running or wrong port. Distinguish these two: `pgrep -fa whatsapp-bridge` tells you if a process exists at all locally; if it does but the port doesn't answer, that's the silent-bind-failure pattern (bridge started before its network interface was ready) — check `ss -tln | grep <port>` and the bridge's own log (`bridge.log` in its install dir) for `bind: cannot assign requested address`.
 
 **c. Auth, if configured**
 If `WHATSAPP_API_AUTH_TOKEN` is set in this server's env, POST to `<base>/chats` with `{"limit":1}` and that bearer token. 401 → token doesn't match the bridge's `API_AUTH_TOKEN`. 200 → auth OK, continue.
