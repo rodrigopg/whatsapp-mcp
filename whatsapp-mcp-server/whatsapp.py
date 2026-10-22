@@ -15,7 +15,10 @@ import tts
 # stderr, which stdio-transport MCP servers can safely use for diagnostics.
 logger = logging.getLogger(__name__)
 
-WHATSAPP_API_BASE_URL = os.environ.get("WHATSAPP_API_BASE_URL", "http://localhost:8080/api")
+# install.sh passes WHATSAPP_BRIDGE_PORT; honour it when no full URL is given, as transcribe.py does.
+WHATSAPP_API_BASE_URL = os.environ.get(
+    "WHATSAPP_API_BASE_URL", f"http://localhost:{os.environ.get('WHATSAPP_BRIDGE_PORT', '8080')}/api"
+)
 WHATSAPP_API_AUTH_TOKEN = os.environ.get("WHATSAPP_API_AUTH_TOKEN", "")
 
 REQUEST_TIMEOUT = 30
