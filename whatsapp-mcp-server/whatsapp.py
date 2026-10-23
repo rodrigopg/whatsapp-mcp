@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 
 # install.sh passes WHATSAPP_BRIDGE_PORT; honour it when no full URL is given, as transcribe.py does.
 WHATSAPP_API_BASE_URL = os.environ.get(
-    "WHATSAPP_API_BASE_URL", f"http://localhost:{os.environ.get('WHATSAPP_BRIDGE_PORT', '8080')}/api"
+    "WHATSAPP_API_BASE_URL", f"http://localhost:{os.environ.get('WHATSAPP_BRIDGE_PORT') or '8080'}/api"
 )
 WHATSAPP_API_AUTH_TOKEN = os.environ.get("WHATSAPP_API_AUTH_TOKEN", "")
 
