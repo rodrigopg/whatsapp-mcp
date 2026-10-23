@@ -19,17 +19,34 @@ jobs:
       - name: Build, vet, test
         working-directory: whatsapp-bridge
         run: |
+          test -z "$(gofmt -l .)" || { gofmt -l .; echo "run gofmt -w on the files above"; exit 1; }
           go build -o /tmp/wb .
           go vet ./...
           go test ./...
 
   python:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
+      # apt mirrors stall for minutes at a time; the static build comes from GitHub's own CDN.
       - name: Install ffmpeg
-        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+        timeout-minutes: 10
+        run: |
+          # A month-end BtbN build: those stay published, unlike the daily ones and "latest".
+          name=ffmpeg-n9.0.2-17-g2a571b6068-linux64-gpl-9.0
+          url=https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-09-30-13-08/$name.tar.xz
+          sha=68ee646831adaae2495618346f3bba94ff207ff83bbd34d643e7004730d66269
+          for attempt in 1 2 3; do
+            curl -fsSL --max-time 180 -o "$RUNNER_TEMP/ffmpeg.tar.xz" "$url" && break
+            echo "ffmpeg download attempt $attempt failed"
+            [ "$attempt" = 3 ] && exit 1
+            sleep 20
+          done
+          echo "$sha  $RUNNER_TEMP/ffmpeg.tar.xz" | sha256sum -c -
+          tar -xJf "$RUNNER_TEMP/ffmpeg.tar.xz" -C "$RUNNER_TEMP" --strip-components=2 "$name/bin/ffmpeg" "$name/bin/ffprobe"
+          echo "$RUNNER_TEMP" >> "$GITHUB_PATH"
       - name: Unit tests
         working-directory: whatsapp-mcp-server
         run: uv run python -m unittest discover -p 'test_*.py'
