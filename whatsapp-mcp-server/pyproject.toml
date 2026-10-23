@@ -4,6 +4,6 @@ version = "0.1.0"
 description = "MCP server for WhatsApp, backed by the whatsapp-bridge REST API"
 requires-python = ">=3.11"
 dependencies = [
-    "mcp[cli]>=1.9.0,<1.10",  # streamable HTTP needs >=1.9; 1.10+ pulls pyjwt/cryptography (native build) for auth we do not use
-    "requests>=2.32.3",
+    "mcp[cli]>=1.30,<2",  # 1.30 closes the HTTP-transport CVEs (DNS rebinding, session binding); 2.x renames FastMCP
+    "requests>=2.33",
 ]

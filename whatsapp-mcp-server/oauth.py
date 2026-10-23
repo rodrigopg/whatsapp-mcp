@@ -222,7 +222,8 @@ def oauth_from_env(env=os.environ):
     if len(pw) < 24:
         raise SystemExit("MCP_OAUTH_PASSPHRASE must be at least 24 characters (for example: openssl rand -hex 24)")
     provider = OwnerOAuth(env.get("MCP_OAUTH_DB", "mcp-oauth.db"), pw, env.get("MCP_AUTH_TOKEN", ""), url)
-    settings = AuthSettings(issuer_url=url, required_scopes=[SCOPE],
+    # resource_server_url=None: we serve the RFC 9728 metadata ourselves (install_oauth_routes).
+    settings = AuthSettings(issuer_url=url, resource_server_url=None, required_scopes=[SCOPE],
                             client_registration_options=ClientRegistrationOptions(enabled=True, valid_scopes=[SCOPE], default_scopes=[SCOPE]),
                             revocation_options=RevocationOptions(enabled=True))
     return provider, settings

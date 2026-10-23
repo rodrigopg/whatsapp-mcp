@@ -30,7 +30,7 @@ class OAuthFlow(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.mod = load_main(MCP_TRANSPORT="streamable-http", MCP_AUTH_TOKEN=TOKEN, MCP_PUBLIC_URL=URL,
                              MCP_OAUTH_PASSPHRASE=PASS, MCP_OAUTH_DB=os.path.join(self.tmp.name, "o.db"))
-        self.client = TestClient(self.mod.mcp.streamable_http_app(), base_url=URL, follow_redirects=False)
+        self.client = TestClient(self.mod.build_http_app(), base_url=URL, follow_redirects=False)
         self.client.__enter__()
 
     def tearDown(self):

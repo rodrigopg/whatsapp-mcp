@@ -211,7 +211,7 @@ network (Tailscale, WireGuard, SSH tunnel) plus the token is the recommended set
 **Read-only and remote MCP (opt-in).** Both are off by default; stdio installs behave exactly as before.
 
 - `MCP_READONLY=true` — registers only the read tools (`search_contacts`, `list_messages`, `list_chats`, `list_active_chats`, `list_matters`, `review_next_messages`, `list_chase_drafts`, `suggest_favorites`, `list_favorites`, `get_chat`, `get_direct_chat_by_contact`, `get_contact_chats`, `get_last_interaction`, `get_message_context`, `get_group_info`, `resolve_contact`, `check_whatsapp`, `get_poll_votes`). Tools that can change state under any argument are treated as writes, so `get_group_invite_link` (its `reset` flag revokes the link) is hidden too. Every write tool, including `download_media` (it writes files to disk), is not exposed at all. Works with either transport.
-- `MCP_TRANSPORT=streamable-http` — serves MCP over HTTP instead of stdio, at `http://<MCP_HOST>:<MCP_PORT>/mcp/` (defaults `127.0.0.1` and `8000`; keep the trailing slash). `MCP_AUTH_TOKEN` is **mandatory**: the server refuses to start without it, and every request needs `Authorization: Bearer <token>` (checked in constant time, 401 otherwise).
+- `MCP_TRANSPORT=streamable-http` — serves MCP over HTTP instead of stdio, at `http://<MCP_HOST>:<MCP_PORT>/mcp` (defaults `127.0.0.1` and `8000`; `/mcp/` works too). `MCP_AUTH_TOKEN` is **mandatory**: the server refuses to start without it, and every request needs `Authorization: Bearer <token>` (checked in constant time, 401 otherwise).
 
 ```bash
 MCP_TRANSPORT=streamable-http MCP_READONLY=true MCP_AUTH_TOKEN="$(openssl rand -hex 32)" \
@@ -296,7 +296,7 @@ env = { WHATSAPP_BRIDGE_PORT = "8080" }
 
 #### Prerequisites
 
-- Go 1.25+ (go.mod asks for 1.26: Go downloads that toolchain by itself the first time)
+- Go 1.25+ (go.mod asks for Go 1.26 and the patched 1.27.3 toolchain: Go downloads it by itself the first time)
 - Python 3.9+
 - Claude Desktop (or Cursor)
 - UV: `curl -LsSf https://astral.sh/uv/install.sh | sh`

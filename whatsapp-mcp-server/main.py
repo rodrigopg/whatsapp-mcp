@@ -3,6 +3,7 @@ import os
 import sys
 from typing import List, Dict, Any, Optional
 from mcp.server.fastmcp import FastMCP
+from mcp.server.transport_security import TransportSecuritySettings
 from mcp.types import ToolAnnotations
 from oauth import install_oauth_routes, oauth_from_env
 from whatsapp import (
@@ -46,11 +47,14 @@ from whatsapp import (
 # Initialize FastMCP server. OAuth (for Claude web connectors) is opt-in: only the HTTP transport, only when
 # MCP_PUBLIC_URL and MCP_OAUTH_PASSPHRASE are set; see oauth.py.
 _OAUTH = oauth_from_env() if os.environ.get("MCP_TRANSPORT", "").strip().lower() == "streamable-http" else None
+# Host/Origin checks off: every HTTP request already needs a bearer or OAuth token, which a rebinding page cannot
+# send, and the SDK's loopback-only default would refuse the public host behind a reverse proxy.
+_NO_REBINDING_CHECK = TransportSecuritySettings(enable_dns_rebinding_protection=False)
 if _OAUTH:
-    mcp = FastMCP("whatsapp", auth_server_provider=_OAUTH[0], auth=_OAUTH[1])
+    mcp = FastMCP("whatsapp", auth_server_provider=_OAUTH[0], auth=_OAUTH[1], transport_security=_NO_REBINDING_CHECK)
     install_oauth_routes(mcp, _OAUTH[0])
 else:
-    mcp = FastMCP("whatsapp")
+    mcp = FastMCP("whatsapp", transport_security=_NO_REBINDING_CHECK)
 
 # MCP_READONLY=true registers only the read tools; write tools are never exposed.
 _STATIC_TOKEN = os.environ.get("MCP_AUTH_TOKEN", "")  # read once, at import, like MCP_READONLY
@@ -59,12 +63,14 @@ READONLY = os.environ.get("MCP_READONLY", "").strip().lower() in ("1", "true", "
 
 def read_tool(fn):
     # readOnlyHint lets Claude and ChatGPT skip the "this changes something" confirmation for pure reads.
-    return mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, openWorldHint=False))(fn)
+    # structured_output=False: the return hints are loose (strings, dataclasses), so the SDK must not validate against them.
+    return mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, openWorldHint=False),
+                    structured_output=False)(fn)
 
 
 def write_tool(fn):
     # download_media counts as a write: it writes files to disk.
-    return fn if READONLY else mcp.tool()(fn)
+    return fn if READONLY else mcp.tool(structured_output=False)(fn)
 
 
 @read_tool
@@ -970,7 +976,7 @@ class BearerAuth:
 
 
 class McpPathFix:
-    """ASGI middleware: serve `/mcp` exactly like `/mcp/`. The router would answer `/mcp` with a 307 redirect, and
+    """ASGI middleware: serve `/mcp` and `/mcp/` alike. The router redirects one to the other with a 307, and
     connector validators (Claude, ChatGPT) POST to the URL as typed and do not follow it."""
 
     def __init__(self, app, challenge: bytes = b"Bearer"):
@@ -980,7 +986,8 @@ class McpPathFix:
     async def __call__(self, scope, receive, send):
         if scope["type"] != "http" or scope["path"] not in ("/mcp", "/mcp/"):
             return await self.app(scope, receive, send)
-        scope = dict(scope, path="/mcp/", raw_path=b"/mcp/")
+        path = mcp.settings.streamable_http_path
+        scope = dict(scope, path=path, raw_path=path.encode())
 
         async def with_challenge(message):
             # RFC 9728: a 401 must say where to find the authorization server (the SDK's answer has no header).
