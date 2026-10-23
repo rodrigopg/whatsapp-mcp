@@ -58,7 +58,8 @@ class BridgeTimeoutTests(unittest.TestCase):
                 self.assertIn("check", result[1])
 
     def test_download_gives_up(self):
-        self.assertIsNone(self.assertReturns(lambda: whatsapp.download_media("id", "123@s.whatsapp.net")))
+        path, _ = self.assertReturns(lambda: whatsapp.download_media("id", "123@s.whatsapp.net"))
+        self.assertIsNone(path)
 
 
 if __name__ == "__main__":
