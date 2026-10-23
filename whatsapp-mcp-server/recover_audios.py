@@ -118,13 +118,22 @@ def main():
     conn = sqlite3.connect(DB_PATH, timeout=10)
     rows = unavailable_audios(conn, args.limit)
     conn.close()
+    # A retry answered after an earlier run ended left a verified file on disk; transcribe it
+    # instead of asking the phone again.
+    cached = [(m, c) for m, c in rows if recovered_file(c, m)]
+    if cached:
+        log(f"Already recovered on disk: {len(cached)}")
+    rows = [r for r in rows if r not in cached]
+    # The log names only the message ID, which can repeat across chats.
+    attempted = {}
+    for msg_id, chat_jid in rows:
+        attempted.setdefault(msg_id, []).append(chat_jid)
     total = len(rows)
     log(f"Unavailable audios to attempt: {total}")
 
     log_offset = os.path.getsize(BRIDGE_LOG)
     recovered_ids, not_on_phone_ids, errored_ids, unclassified_ids = set(), set(), set(), set()
     request_failed_ids = set()
-    id_to_chat = {r[0]: r[1] for r in rows}
 
     for start in range(0, total, args.batch):
         batch = rows[start:start + args.batch]
@@ -169,12 +178,11 @@ def main():
     # Transcribe everything that recovered, straight off disk. Guard per item so
     # one failure (or a stale log line whose ID isn't in this run) can't abort
     # the loop and lose already-recovered work.
-    log(f"Transcribing {len(recovered_ids)} recovered audios...")
+    # A recovered ID outside this run's attempts is a log line from a prior run.
+    to_transcribe = cached + [(m, c) for m in recovered_ids for c in attempted.get(m, [])]
+    log(f"Transcribing {len(to_transcribe)} recovered audios...")
     transcribed = empty = missing = tx_failed = 0
-    for msg_id in recovered_ids:
-        chat_jid = id_to_chat.get(msg_id)
-        if chat_jid is None:
-            continue  # log line from a prior run; not part of this batch
+    for msg_id, chat_jid in to_transcribe:
         try:
             path = recovered_file(chat_jid, msg_id)
             if not path:
@@ -196,8 +204,11 @@ def main():
     conn = sqlite3.connect(DB_PATH, timeout=10)
     conn.execute("PRAGMA busy_timeout=5000")
     for msg_id in not_on_phone_ids:
-        conn.execute("UPDATE messages SET content=? WHERE id=?",
-                     (SENTINEL_NOT_ON_PHONE, msg_id))
+        chats = attempted.get(msg_id, [])
+        # With the ID in several chats the answer may belong to any of them; retry next run.
+        if len(chats) == 1 and not recovered_file(chats[0], msg_id):
+            conn.execute("UPDATE messages SET content=? WHERE id=? AND chat_jid=?",
+                         (SENTINEL_NOT_ON_PHONE, msg_id, chats[0]))
     conn.commit()
     conn.close()
 
