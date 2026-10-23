@@ -71,7 +71,7 @@ func newWebhookDispatcher(rawURL, secret string) (*webhookDispatcher, error) {
 			// Never replay a signed POST to another host.
 			CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 		},
-		queue:  make(chan webhookPayload, webhookQueueSize),
+		queue: make(chan webhookPayload, webhookQueueSize),
 	}
 	go d.run()
 	return d, nil
