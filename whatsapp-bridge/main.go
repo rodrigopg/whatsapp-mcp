@@ -120,6 +120,14 @@ func NewMessageStore() (*MessageStore, error) {
 		return nil, fmt.Errorf("failed to create tables: %v", err)
 	}
 
+	_, err = db.Exec(`UPDATE messages SET sender = ''
+		WHERE chat_jid LIKE '%@g.us'
+		AND (sender = substr(chat_jid, 1, length(chat_jid) - 5) OR sender = chat_jid)`)
+	if err != nil {
+		db.Close()
+		return nil, fmt.Errorf("failed to repair history senders: %v", err)
+	}
+
 	return &MessageStore{db: db}, nil
 }
 
@@ -131,8 +139,9 @@ func (store *MessageStore) Close() error {
 // TouchChatLastMessageTime updates only last_message_time on an existing chat row.
 func (store *MessageStore) TouchChatLastMessageTime(jid string, lastMessageTime time.Time) error {
 	_, err := store.db.Exec(
-		"UPDATE chats SET last_message_time = ? WHERE jid = ?",
-		lastMessageTime, jid,
+		`UPDATE chats SET last_message_time = ? WHERE jid = ?
+		AND (julianday(last_message_time) IS NULL OR julianday(?) >= julianday(last_message_time))`,
+		lastMessageTime, jid, lastMessageTime,
 	)
 	return err
 }
@@ -208,7 +217,13 @@ func SyncAllContacts(client *whatsmeow.Client, store *MessageStore, logger waLog
 // Store a chat in the database
 func (store *MessageStore) StoreChat(jid, name string, lastMessageTime time.Time) error {
 	_, err := store.db.Exec(
-		"INSERT OR REPLACE INTO chats (jid, name, last_message_time) VALUES (?, ?, ?)",
+		`INSERT INTO chats (jid, name, last_message_time) VALUES (?, ?, ?)
+		ON CONFLICT(jid) DO UPDATE SET
+			name = COALESCE(NULLIF(excluded.name, ''), chats.name),
+			last_message_time = CASE
+				WHEN julianday(chats.last_message_time) IS NULL
+					OR julianday(excluded.last_message_time) >= julianday(chats.last_message_time)
+				THEN excluded.last_message_time ELSE chats.last_message_time END`,
 		jid, name, lastMessageTime,
 	)
 	return err
@@ -254,7 +269,7 @@ func (store *MessageStore) StoreMessage(id, chatJID, sender, content string, tim
 		(id, chat_jid, sender, content, timestamp, is_from_me, media_type, filename, url, media_key, file_sha256, file_enc_sha256, file_length)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id, chat_jid) DO UPDATE SET
-			sender          = excluded.sender,
+			sender          = COALESCE(NULLIF(excluded.sender, ''), messages.sender),
 			content         = COALESCE(NULLIF(excluded.content, ''), messages.content),
 			timestamp       = excluded.timestamp,
 			is_from_me      = excluded.is_from_me,
@@ -851,15 +866,6 @@ func handleMessage(client *whatsmeow.Client, messageStore *MessageStore, msg *ev
 		logger.Warnf("Failed to store sender: %v", err)
 	}
 
-	// Get appropriate chat name (pass nil for conversation since we don't have one for regular messages)
-	name := GetChatName(client, messageStore, msg.Info.Chat, chatJID, nil, sender, logger)
-
-	// Update chat in database with the message timestamp (keeps last message time updated)
-	err := messageStore.StoreChat(chatJID, name, msg.Info.Timestamp)
-	if err != nil {
-		logger.Warnf("Failed to store chat: %v", err)
-	}
-
 	if msg.Message.GetPollUpdateMessage() != nil {
 		recordPollVote(client, messageStore, msg, chatJID, sender, logger)
 		return
@@ -876,10 +882,16 @@ func handleMessage(client *whatsmeow.Client, messageStore *MessageStore, msg *ev
 		return
 	}
 
+	name := GetChatName(client, messageStore, msg.Info.Chat, chatJID, nil, sender, logger)
+	if err := messageStore.EnsureChat(chatJID, time.Time{}); err != nil {
+		logger.Warnf("Failed to ensure chat: %v", err)
+		return
+	}
+
 	emitWebhook(msg, chatJID, sender, content, mediaType) // opt-in, non-blocking (webhook.go)
 
 	// Store message in database
-	err = messageStore.StoreMessage(
+	err := messageStore.StoreMessage(
 		msg.Info.ID,
 		chatJID,
 		sender,
@@ -894,6 +906,11 @@ func handleMessage(client *whatsmeow.Client, messageStore *MessageStore, msg *ev
 		fileEncSHA256,
 		fileLength,
 	)
+	if err == nil {
+		if chatErr := messageStore.StoreChat(chatJID, name, msg.Info.Timestamp); chatErr != nil {
+			logger.Warnf("Failed to store chat: %v", chatErr)
+		}
+	}
 	if jids := mentionedJIDs(msg.Message); err == nil && len(jids) > 0 {
 		if mErr := storeMentions(messageStore.db, chatJID, msg.Info.ID, jids); mErr != nil {
 			logger.Warnf("Failed to store mentions: %v", mErr)
@@ -3075,6 +3092,9 @@ type SenderNameResponse struct {
 }
 
 func getSenderName(db *sql.DB, senderJID string) (SenderNameResponse, error) {
+	if senderJID == "" {
+		return SenderNameResponse{Name: "Unknown sender"}, nil
+	}
 	var name sql.NullString
 	err := db.QueryRow("SELECT name FROM chats WHERE jid = ? LIMIT 1", senderJID).Scan(&name)
 	if err != nil && err != sql.ErrNoRows {
@@ -4183,6 +4203,24 @@ func unwrapHistoryMessage(m *waProto.Message) *waProto.Message {
 	return (&events.Message{RawMessage: m}).UnwrapRaw().Message
 }
 
+func historySender(chat, own types.JID, msg *waProto.WebMessageInfo) types.JID {
+	if msg.GetKey().GetFromMe() {
+		return own.ToNonAD()
+	}
+	if chat.Server == types.DefaultUserServer || chat.Server == types.HiddenUserServer || chat.Server == types.NewsletterServer {
+		return chat
+	}
+	participant := msg.GetParticipant()
+	if participant == "" {
+		participant = msg.GetKey().GetParticipant()
+	}
+	sender, err := types.ParseJID(participant)
+	if err != nil || (sender.Server != types.DefaultUserServer && sender.Server != types.HiddenUserServer) {
+		return types.EmptyJID
+	}
+	return sender.ToNonAD()
+}
+
 // Handle history sync events
 func handleHistorySync(client *whatsmeow.Client, messageStore *MessageStore, historySync *events.HistorySync, logger waLog.Logger) {
 	fmt.Printf("Received history sync event with %d conversations\n", len(historySync.Data.Conversations))
@@ -4213,25 +4251,12 @@ func handleHistorySync(client *whatsmeow.Client, messageStore *MessageStore, his
 		// Process messages
 		messages := conversation.Messages
 		if len(messages) > 0 {
-			// Update chat with latest message timestamp
-			latestMsg := messages[0]
-			if latestMsg == nil || latestMsg.Message == nil {
-				continue
-			}
-
-			// Get timestamp from message info
-			timestamp := time.Time{}
-			if ts := latestMsg.Message.GetMessageTimestamp(); ts != 0 {
-				timestamp = time.Unix(int64(ts), 0)
-			} else {
-				continue
-			}
-
-			messageStore.StoreChat(chatJID, name, timestamp)
+			var latestTimestamp time.Time
+			chatEnsured := false
 
 			// Store messages
 			for _, msg := range messages {
-				if msg == nil || msg.Message == nil {
+				if msg.GetMessage().GetKey().GetID() == "" || msg.GetMessage().GetMessageTimestamp() == 0 {
 					continue
 				}
 
@@ -4262,42 +4287,25 @@ func handleHistorySync(client *whatsmeow.Client, messageStore *MessageStore, his
 					continue
 				}
 
-				// Determine sender
-				var sender string
-				isFromMe := false
-				if msg.Message.Key != nil {
-					if msg.Message.Key.FromMe != nil {
-						isFromMe = *msg.Message.Key.FromMe
+				var own types.JID
+				if client != nil && client.Store != nil && client.Store.ID != nil {
+					own = *client.Store.ID
+				}
+				sender := resolveToPN(client, historySender(jid, own, msg.Message)).User
+				if sender == "" {
+					logger.Warnf("History message %s has unknown sender", msg.Message.GetKey().GetID())
+				}
+				isFromMe := msg.Message.GetKey().GetFromMe()
+				msgID := msg.Message.GetKey().GetID()
+				timestamp := time.Unix(int64(msg.Message.GetMessageTimestamp()), 0)
+
+				if !chatEnsured {
+					if err := messageStore.EnsureChat(chatJID, time.Time{}); err != nil {
+						logger.Warnf("Failed to ensure history chat: %v", err)
+						break
 					}
-					if !isFromMe && msg.Message.Key.Participant != nil && *msg.Message.Key.Participant != "" {
-						if pjid, perr := types.ParseJID(*msg.Message.Key.Participant); perr == nil {
-							sender = resolveToPN(client, pjid).User
-						} else {
-							sender = *msg.Message.Key.Participant
-						}
-					} else if isFromMe {
-						sender = client.Store.ID.User
-					} else {
-						sender = jid.User
-					}
-				} else {
-					sender = jid.User
+					chatEnsured = true
 				}
-
-				// Store message
-				msgID := ""
-				if msg.Message.Key != nil && msg.Message.Key.ID != nil {
-					msgID = *msg.Message.Key.ID
-				}
-
-				// Get message timestamp
-				timestamp := time.Time{}
-				if ts := msg.Message.GetMessageTimestamp(); ts != 0 {
-					timestamp = time.Unix(int64(ts), 0)
-				} else {
-					continue
-				}
-
 				err = messageStore.StoreMessage(
 					msgID,
 					chatJID,
@@ -4316,6 +4324,9 @@ func handleHistorySync(client *whatsmeow.Client, messageStore *MessageStore, his
 				if err != nil {
 					logger.Warnf("Failed to store history message: %v", err)
 				} else {
+					if timestamp.After(latestTimestamp) {
+						latestTimestamp = timestamp
+					}
 					syncedCount++
 					if jids := mentionedJIDs(inner); len(jids) > 0 {
 						_ = storeMentions(messageStore.db, chatJID, msgID, jids)
@@ -4328,6 +4339,11 @@ func handleHistorySync(client *whatsmeow.Client, messageStore *MessageStore, his
 						logger.Infof("Stored message: [%s] %s -> %s: %s",
 							timestamp.Format("2006-01-02 15:04:05"), sender, chatJID, content)
 					}
+				}
+			}
+			if !latestTimestamp.IsZero() {
+				if err := messageStore.StoreChat(chatJID, name, latestTimestamp); err != nil {
+					logger.Warnf("Failed to store history chat: %v", err)
 				}
 			}
 		}
@@ -4555,7 +4571,10 @@ func requestMediaRetry(client *whatsmeow.Client, messageStore *MessageStore, mes
 
 	isGroup := jid.Server == types.GroupServer
 	senderJID := jid
-	if isGroup && sender != "" {
+	if isGroup {
+		if sender == "" || sender == jid.User || sender == jid.String() {
+			return fmt.Errorf("unknown group message sender")
+		}
 		senderJID = types.JID{User: sender, Server: types.DefaultUserServer}
 	}
 

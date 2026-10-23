@@ -168,6 +168,8 @@ def _chat_from_dict(d: dict) -> Chat:
 
 
 def get_sender_name(sender_jid: str) -> str:
+    if not sender_jid:
+        return "Unknown sender"
     if sender_jid in _sender_name_cache:
         return _sender_name_cache[sender_jid]
 
