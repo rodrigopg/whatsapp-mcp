@@ -115,29 +115,36 @@ func optionsForHashes(options []string, hashes [][]byte) []string {
 }
 
 // recordPollVote decrypts an incoming vote and stores it (latest vote per voter wins).
-func recordPollVote(client *whatsmeow.Client, store *MessageStore, msg *events.Message, chatJID, voter string, logger waLog.Logger) {
+func recordPollVote(client *whatsmeow.Client, store *MessageStore, msg *events.Message, chatJID, voter string, logger waLog.Logger) bool {
 	pollID := msg.Message.GetPollUpdateMessage().GetPollCreationMessageKey().GetID()
 	var optsJSON string
-	if err := store.db.QueryRow(`SELECT options FROM polls WHERE id = ? AND chat_jid = ?`, pollID, chatJID).Scan(&optsJSON); err != nil {
-		logger.Warnf("Poll vote from %s ignored: poll %s is not tracked in chat %s (%v)", voter, pollID, chatJID, err)
-		return
+	if err := store.db.QueryRow(`SELECT options FROM polls WHERE id = ? AND chat_jid = ?`, pollID, chatJID).Scan(&optsJSON); errors.Is(err, sql.ErrNoRows) {
+		logger.Warnf("Poll vote from %s ignored: poll %s is not tracked in chat %s", voter, pollID, chatJID)
+		return true
+	} else if err != nil {
+		logger.Warnf("Failed to read poll %s: %v", pollID, err)
+		return false
 	}
 	var options []string
 	if json.Unmarshal([]byte(optsJSON), &options) != nil {
 		logger.Warnf("Poll vote from %s ignored: poll %s has unreadable options", voter, pollID)
-		return
+		return true
 	}
 	vote, err := client.DecryptPollVote(context.Background(), msg)
 	if err != nil {
 		logger.Warnf("Failed to decrypt poll vote for %s: %v", pollID, err)
-		return
+		// whatsmeow wraps a failed read of whatsapp.db only in this message; a missing or wrong key
+		// stays wrong on redelivery, so only the read is worth retrying.
+		return !strings.Contains(err.Error(), "failed to get original message secret key")
 	}
 	logger.Infof("Poll vote from %s on %s: %d option(s)", voter, pollID, len(vote.GetSelectedOptions()))
 	selected, _ := json.Marshal(optionsForHashes(options, vote.GetSelectedOptions()))
 	if _, err := store.db.Exec(`INSERT OR REPLACE INTO poll_votes (poll_id, chat_jid, voter, selected, timestamp) VALUES (?, ?, ?, ?, ?)`,
 		pollID, chatJID, voter, string(selected), msg.Info.Timestamp); err != nil {
 		logger.Warnf("Failed to store poll vote: %v", err)
+		return false
 	}
+	return true
 }
 
 type PollRequest struct {
