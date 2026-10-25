@@ -188,9 +188,11 @@ def install_oauth_routes(mcp, provider: OwnerOAuth) -> None:
         if request.method == "GET":
             req = request.query_params.get("req", "")
             return await page(req) if provider.pending(req) else HTMLResponse("This login link has expired. Start again from Claude.", status_code=400, headers=_HEADERS)
-        body = await request.body()
-        if len(body) > 4096:
-            return HTMLResponse("Request too large.", status_code=413, headers=_HEADERS)
+        body = bytearray()
+        async for chunk in request.stream():
+            if len(body) + len(chunk) > 4096:
+                return HTMLResponse("Request too large.", status_code=413, headers=_HEADERS)
+            body.extend(chunk)
         form = parse_qs(body.decode("utf-8", "replace"))
         req, given = (form.get("req") or [""])[0], (form.get("passphrase") or [""])[0]
         if provider.locked():

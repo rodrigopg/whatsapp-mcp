@@ -1,6 +1,8 @@
+import asyncio
 import hmac
 import os
 import sys
+from functools import wraps
 from typing import List, Dict, Any, Optional
 from mcp.server.fastmcp import FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
@@ -61,16 +63,27 @@ _STATIC_TOKEN = os.environ.get("MCP_AUTH_TOKEN", "")  # read once, at import, li
 READONLY = os.environ.get("MCP_READONLY", "").strip().lower() in ("1", "true", "yes", "on")
 
 
+def _threaded_tool(fn):
+    @wraps(fn)
+    async def run(*args, **kwargs):
+        return await asyncio.to_thread(fn, *args, **kwargs)
+
+    return run
+
+
 def read_tool(fn):
     # readOnlyHint lets Claude and ChatGPT skip the "this changes something" confirmation for pure reads.
     # structured_output=False: the return hints are loose (strings, dataclasses), so the SDK must not validate against them.
-    return mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, openWorldHint=False),
-                    structured_output=False)(fn)
+    mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, openWorldHint=False),
+             structured_output=False)(_threaded_tool(fn))
+    return fn
 
 
 def write_tool(fn):
     # download_media counts as a write: it writes files to disk.
-    return fn if READONLY else mcp.tool(structured_output=False)(fn)
+    if not READONLY:
+        mcp.tool(structured_output=False)(_threaded_tool(fn))
+    return fn
 
 
 @read_tool
@@ -95,7 +108,7 @@ def list_messages(
     include_context: bool = True,
     context_before: int = 1,
     context_after: int = 1
-) -> List[Dict[str, Any]]:
+) -> str:
     """Get WhatsApp messages matching specified criteria with optional context.
     
     Args:

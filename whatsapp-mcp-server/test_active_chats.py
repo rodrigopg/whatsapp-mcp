@@ -13,9 +13,10 @@ class TestListActiveChats(unittest.TestCase):
         self.assertEqual(m.call_args.args, ("/chats/active", {
             "after": "2026-05-21T00:00:00-03:00", "before": "2026-05-21T23:59:59-03:00", "include_groups": True}))
 
-    def test_bridge_failure_is_an_empty_list(self):
-        with patch("whatsapp._api_post", return_value=None):
-            self.assertEqual(whatsapp.list_active_chats(), [])
+    def test_bridge_failure_is_not_an_empty_list(self):
+        with patch("whatsapp.requests.post", side_effect=whatsapp.requests.ConnectionError()):
+            with self.assertRaisesRegex(whatsapp.BridgeError, "Bridge unavailable"):
+                whatsapp.list_active_chats()
 
 
 if __name__ == "__main__":

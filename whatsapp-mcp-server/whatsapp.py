@@ -33,6 +33,10 @@ MEDIA_TIMEOUT = 300
 _sender_name_cache: Dict[str, str] = {}
 
 
+class BridgeError(RuntimeError):
+    """A bridge failure safe to show to MCP clients."""
+
+
 def _auth_headers() -> Dict[str, str]:
     if WHATSAPP_API_AUTH_TOKEN:
         return {"Authorization": f"Bearer {WHATSAPP_API_AUTH_TOKEN}"}
@@ -48,38 +52,32 @@ def _api_request(method: str, path: str, timeout: int = REQUEST_TIMEOUT, **kwarg
     response = requests.request(method, url, headers=_auth_headers(), timeout=timeout, **kwargs)
     if response.status_code == 401:
         raise requests.RequestException(
-            f"HTTP 401 - check WHATSAPP_API_AUTH_TOKEN matches the bridge's API_AUTH_TOKEN ({response.text})"
+            "HTTP 401 - check WHATSAPP_API_AUTH_TOKEN matches the bridge's API_AUTH_TOKEN"
         )
     return response
 
 
-def _api_post(path: str, payload: dict, timeout: int = REQUEST_TIMEOUT) -> Optional[dict]:
-    """POST to the bridge REST API. Returns the parsed JSON dict on HTTP 200,
-    or None on any failure (non-200 status, timeout, connection error, bad JSON).
-    Never raises — mirrors the old `except sqlite3.Error` behavior."""
+def _api_post(path: str, payload: dict, timeout: int = REQUEST_TIMEOUT) -> dict:
+    """POST to the bridge, raising a safe error instead of fabricating an empty result."""
     try:
         url = f"{WHATSAPP_API_BASE_URL}{path}"
         response = requests.post(url, json=payload, headers=_auth_headers(), timeout=timeout)
-        if response.status_code == 401:
-            logger.warning(
-                "API auth error on %s: HTTP 401 - check WHATSAPP_API_AUTH_TOKEN "
-                "matches the bridge's API_AUTH_TOKEN (%s)",
-                path, response.text,
-            )
-            return None
-        if response.status_code != 200:
-            logger.warning("API error on %s: HTTP %s - %s", path, response.status_code, response.text)
-            return None
-        return response.json()
-    except requests.RequestException as e:
-        logger.warning("Request error on %s: %s", path, e)
-        return None
-    except json.JSONDecodeError:
-        logger.warning("Error parsing response as JSON from %s", path)
-        return None
-    except Exception as e:
-        logger.warning("Unexpected error on %s: %s", path, e)
-        return None
+    except requests.Timeout:
+        raise BridgeError("Bridge request timed out") from None
+    except requests.RequestException:
+        raise BridgeError("Bridge unavailable; check that it is running and reachable") from None
+
+    if response.status_code == 401:
+        raise BridgeError("Bridge authentication failed (HTTP 401); check WHATSAPP_API_AUTH_TOKEN")
+    if response.status_code != 200:
+        raise BridgeError(f"Bridge request failed (HTTP {response.status_code})")
+    try:
+        result = response.json()
+    except ValueError:
+        raise BridgeError("Bridge returned invalid JSON") from None
+    if not isinstance(result, dict):
+        raise BridgeError("Bridge returned an invalid response")
+    return result
 
 
 def _strip_accents(text: Optional[str]) -> Optional[str]:
@@ -174,10 +172,6 @@ def get_sender_name(sender_jid: str) -> str:
         return _sender_name_cache[sender_jid]
 
     result = _api_post("/sender_name", {"sender_jid": sender_jid})
-    if result is None:
-        # Transport failure: don't cache, so a later retry can still succeed.
-        return sender_jid
-
     name = result.get("name", sender_jid)
     _sender_name_cache[sender_jid] = name
     return name
@@ -199,6 +193,8 @@ def format_message(message: Message, show_chat_info: bool = True) -> None:
     try:
         sender_name = get_sender_name(message.sender) if not message.is_from_me else "Me"
         output += f"From: {sender_name}: {content_prefix}{message.content}\n"
+    except BridgeError:
+        raise
     except Exception as e:
         logger.warning("Error formatting message %s: %s", message.id, e)
     return output
@@ -224,10 +220,8 @@ def list_messages(
     include_context: bool = True,
     context_before: int = 1,
     context_after: int = 1
-) -> List[Message]:
+) -> str:
     """Get messages matching the specified criteria with optional context."""
-    # Validate date filters up front (same contract as before: invalid dates raise
-    # a ValueError that propagates to the caller, it is NOT swallowed like transport errors).
     if after:
         try:
             datetime.fromisoformat(after)
@@ -251,9 +245,6 @@ def list_messages(
     }
 
     result = _api_post("/messages", payload)
-    if result is None:
-        return []
-
     messages = [_message_from_dict(m) for m in result.get("messages", [])]
 
     if include_context and messages:
@@ -265,6 +256,8 @@ def list_messages(
                 messages_with_context.extend(context.before)
                 messages_with_context.append(context.message)
                 messages_with_context.extend(context.after)
+            except BridgeError:
+                raise
             except Exception as e:
                 # A single failed context lookup shouldn't sink the whole batch -
                 # fall back to the bare message. But unlike a genuine "not found"
@@ -299,11 +292,6 @@ def get_message_context(
         "after": after,
     })
 
-    if result is None:
-        # Transport/server failure - mirror old `except ... raise` behavior for
-        # the DB-error path by not silently fabricating a context.
-        raise ValueError(f"Could not fetch context for message ID {message_id}")
-
     msg_data = result.get("message")
     if not msg_data:
         raise ValueError(f"Message with ID {message_id} not found")
@@ -335,9 +323,6 @@ def list_chats(
         "sort_by": sort_by,
     })
 
-    if result is None:
-        return []
-
     return [_chat_from_dict(c) for c in result.get("chats", [])]
 
 
@@ -348,15 +333,12 @@ def list_active_chats(
 ) -> List[dict]:
     """Conversations with at least one message in the window, as the bridge returns them."""
     result = _api_post("/chats/active", {"after": after, "before": before, "include_groups": include_groups})
-    return [] if result is None else result.get("chats", [])
+    return result.get("chats", [])
 
 
 def search_contacts(query: str) -> List[Contact]:
     """Search contacts by name or phone number."""
     result = _api_post("/contacts/search", {"query": query})
-
-    if result is None:
-        return []
 
     return [
         Contact(
@@ -382,18 +364,12 @@ def get_contact_chats(jid: str, limit: int = 20, page: int = 0) -> List[Chat]:
         "page": page,
     })
 
-    if result is None:
-        return []
-
     return [_chat_from_dict(c) for c in result.get("chats", [])]
 
 
 def get_last_interaction(jid: str) -> str:
     """Get most recent message involving the contact."""
     result = _api_post("/contacts/last_interaction", {"jid": jid})
-
-    if result is None:
-        return None
 
     # The endpoint has been described two ways (`formatted` string vs raw
     # `message` object); accept either so a mismatch with the bridge implementation
@@ -416,9 +392,6 @@ def get_chat(chat_jid: str, include_last_message: bool = True) -> Optional[Chat]
         "include_last_message": include_last_message,
     })
 
-    if result is None:
-        return None
-
     chat_data = result.get("chat")
     if not chat_data:
         return None
@@ -429,9 +402,6 @@ def get_chat(chat_jid: str, include_last_message: bool = True) -> Optional[Chat]
 def get_direct_chat_by_contact(sender_phone_number: str) -> Optional[Chat]:
     """Get chat metadata by sender phone number (handles LID contacts)."""
     result = _api_post("/chat/by_contact", {"sender_phone_number": _normalize_phone(sender_phone_number)})
-
-    if result is None:
-        return None
 
     chat_data = result.get("chat")
     if not chat_data:
@@ -510,6 +480,7 @@ def send_file(recipient: str, media_path: str) -> Tuple[bool, str]:
         return False, f"Unexpected error: {str(e)}"
 
 def send_audio_message(recipient: str, media_path: str) -> Tuple[bool, str]:
+    temp_path = None
     try:
         # Validate input
         if not recipient:
@@ -524,6 +495,7 @@ def send_audio_message(recipient: str, media_path: str) -> Tuple[bool, str]:
         if not media_path.endswith(".ogg"):
             try:
                 media_path = audio.convert_to_opus_ogg_temp(media_path)
+                temp_path = media_path
             except Exception as e:
                 return False, f"Error converting file to opus ogg. You likely need to install ffmpeg: {str(e)}"
 
@@ -550,6 +522,12 @@ def send_audio_message(recipient: str, media_path: str) -> Tuple[bool, str]:
         return False, f"Error parsing response: {response.text}"
     except Exception as e:
         return False, f"Unexpected error: {str(e)}"
+    finally:
+        if temp_path:
+            try:
+                os.remove(temp_path)
+            except OSError:
+                pass
 
 def send_voice_message(recipient: str, text: str, notice: str = "") -> Tuple[bool, str]:
     """Synthesize text to speech and send it as a WhatsApp voice message.
@@ -619,10 +597,14 @@ def download_media(message_id: str, chat_jid: str) -> Tuple[Optional[str], str]:
             logger.info("Media downloaded successfully: %s", path)
             return path, "Media downloaded successfully"
 
-        logger.warning(
-            "Download failed: HTTP %s - %s", response.status_code,
-            result.get("message") or response.text,
-        )
+        if response.status_code == 401:
+            # Like the other bridge calls, a 401 logs the status only, never the body.
+            logger.warning("Download failed: HTTP 401")
+        else:
+            logger.warning(
+                "Download failed: HTTP %s - %s", response.status_code,
+                result.get("message") or response.text,
+            )
         if response.status_code == 401:
             return None, (
                 "HTTP 401 - check WHATSAPP_API_AUTH_TOKEN matches the bridge's "
