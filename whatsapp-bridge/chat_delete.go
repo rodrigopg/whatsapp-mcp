@@ -56,7 +56,9 @@ func chatDeleteTarget(db *sql.DB, chat, prefix string) (string, time.Time, *waCo
 	}
 	key := &waCommon.MessageKey{RemoteJID: proto.String(chat), FromMe: proto.Bool(fromMe), ID: proto.String(id.String)}
 	if !fromMe && strings.HasSuffix(chat, "@g.us") && sender.String != "" {
-		key.Participant = proto.String(sender.String + "@s.whatsapp.net")
+		if participant, err := parseSender(sender.String); err == nil {
+			key.Participant = proto.String(participant.String())
+		}
 	}
 	return name.String, ts, key, nil
 }

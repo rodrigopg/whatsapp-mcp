@@ -134,8 +134,7 @@ func recordPollVote(client *whatsmeow.Client, store *MessageStore, msg *events.M
 	}
 	logger.Infof("Poll vote from %s on %s: %d option(s)", voter, pollID, len(vote.GetSelectedOptions()))
 	selected, _ := json.Marshal(optionsForHashes(options, vote.GetSelectedOptions()))
-	if _, err := store.db.Exec(`INSERT OR REPLACE INTO poll_votes (poll_id, chat_jid, voter, selected, timestamp) VALUES (?, ?, ?, ?, ?)`,
-		pollID, chatJID, voter, string(selected), msg.Info.Timestamp); err != nil {
+	if err := storePollVote(store.db, pollID, chatJID, voter, string(selected), msg.Info.Timestamp); err != nil {
 		logger.Warnf("Failed to store poll vote: %v", err)
 	}
 }

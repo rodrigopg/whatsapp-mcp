@@ -57,7 +57,10 @@ func pollCreatorJID(client *whatsmeow.Client, senderUser string, fromMe bool) ty
 		}
 		return client.Store.ID.ToNonAD()
 	}
-	pn := types.JID{User: senderUser, Server: types.DefaultUserServer}
+	pn, err := parseSender(senderUser)
+	if err != nil || pn.Server == types.HiddenUserServer {
+		return pn
+	}
 	if client.Store.LIDs != nil {
 		if lid, err := client.Store.LIDs.GetLIDForPN(context.Background(), pn); err == nil && !lid.IsEmpty() {
 			return lid
