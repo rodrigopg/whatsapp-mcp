@@ -78,6 +78,7 @@ MCP_TOOLS = {
     "react_to_message",
     "record_matter",
     "reopen_matter",
+    "request_chat_history",
     "resolve_contact",
     "review_next_messages",
     "search_contacts",

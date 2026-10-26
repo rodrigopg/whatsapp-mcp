@@ -27,6 +27,7 @@ from whatsapp import (
     mark_chat_unread as whatsapp_mark_chat_unread,
     get_group_info as whatsapp_get_group_info,
     archive_chat as whatsapp_archive_chat,
+    request_chat_history as whatsapp_request_chat_history,
     resolve_contact as whatsapp_resolve_contact,
     react_to_message as whatsapp_react_to_message,
     create_poll as whatsapp_create_poll,
@@ -441,6 +442,16 @@ def get_group_info(jid: str) -> Dict[str, Any]:
     if info:
         result.update(info)
     return result
+
+
+@write_tool
+def request_chat_history(chat_jid: str, count: int = 50) -> Dict[str, Any]:
+    """Ask the phone for 1-50 messages before the oldest stored message (default 50).
+    Requires a nonempty chat and an online phone. Success means requested; messages
+    arrive asynchronously and can then be read with list_messages. Wakes the phone.
+    """
+    success, message = whatsapp_request_chat_history(chat_jid, count)
+    return {"success": success, "message": message}
 
 
 @write_tool

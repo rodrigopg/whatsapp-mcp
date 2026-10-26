@@ -3843,6 +3843,7 @@ img{border:8px solid white;border-radius:8px;box-shadow:0 4px 20px rgba(0,0,0,.2
 	registerSummaryRoute(messageStore.db, client)
 	registerDraftRoutes(messageStore, client)
 	http.HandleFunc("/api/chat/delete", handleDeleteChat(client, messageStore))
+	http.HandleFunc("/api/chat/backfill", handleChatBackfill(client, messageStore))
 	http.HandleFunc("/api/appstate/resync", handleAppStateResync(client))
 	http.HandleFunc("/api/poll_votes", handlePollVotes(messageStore))
 	http.HandleFunc("/api/poll_vote", handlePollVote(client, messageStore))
@@ -4398,34 +4399,11 @@ func handleHistorySync(client *whatsmeow.Client, messageStore *MessageStore, his
 	SyncAllContacts(client, messageStore, logger)
 }
 
-// Request history sync from the server
-// requestHistorySync asks the primary device (phone) for `count` messages
-// immediately BEFORE lastKnown, via whatsmeow's on-demand history sync
-// (BuildHistorySyncRequest + SendPeerMessage — see
-// https://github.com/tulir/whatsmeow/blob/main/send.go). lastKnown must be a
-// real, already-known message (chat/ID/IsFromMe/timestamp) — the whatsmeow
-// call dereferences it unconditionally and panics on nil. The response
-// arrives later as a normal *events.HistorySync (type ON_DEMAND), handled by
-// the same handleHistorySync used for the initial pairing sync — no separate
-// handler needed.
-func requestHistorySync(client *whatsmeow.Client, lastKnown *types.MessageInfo, count int) {
-	if client == nil || !client.IsConnected() || client.Store.ID == nil {
-		fmt.Println("Client not ready for history sync request.")
-		return
-	}
-	if lastKnown == nil {
-		fmt.Println("requestHistorySync: lastKnown message info is required (whatsmeow dereferences it unconditionally).")
-		return
-	}
-
+// The phone replies asynchronously with ON_DEMAND, saved by handleHistorySync.
+func requestHistorySync(ctx context.Context, client historySyncClient, lastKnown *types.MessageInfo, count int) error {
 	historyMsg := client.BuildHistorySyncRequest(lastKnown, count)
-	_, err := client.SendPeerMessage(context.Background(), historyMsg)
-	if err != nil {
-		fmt.Printf("Failed to request history sync: %v\n", err)
-	} else {
-		fmt.Printf("History sync requested for %d messages before %s in %s. Waiting for server response...\n",
-			count, lastKnown.ID, lastKnown.Chat.String())
-	}
+	_, err := client.SendPeerMessage(ctx, historyMsg)
+	return err
 }
 
 // sweepOnce guards against launching the transcription ticker more than once,
