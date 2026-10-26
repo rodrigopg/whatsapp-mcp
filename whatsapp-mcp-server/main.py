@@ -97,7 +97,9 @@ def list_messages(
     context_after: int = 1
 ) -> List[Dict[str, Any]]:
     """Get WhatsApp messages matching specified criteria with optional context.
-    
+
+    Each message carries its Message ID and Chat JID, to reply, react or download media.
+
     Args:
         after: Optional ISO-8601 formatted string to only return messages after this date
         before: Optional ISO-8601 formatted string to only return messages before this date
