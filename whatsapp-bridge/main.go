@@ -3932,6 +3932,9 @@ func main() {
 			// Process history sync events
 			handleHistorySync(client, messageStore, v, logger)
 
+		case *events.GroupInfo:
+			handleGroupInfo(messageStore, v, logger)
+
 		case *events.MediaRetry:
 			// Phone responded to a media retry request with a (hopefully) fresh
 			// directPath. Handle off the event loop — it does a synchronous
@@ -3943,6 +3946,7 @@ func main() {
 		case *events.Connected:
 			logger.Infof("Connected to WhatsApp")
 			go SyncAllContacts(client, messageStore, logger)
+			go syncGroupNames(client, messageStore, logger)
 			sweepOnce.Do(func() { startTranscriptionSweep(5 * time.Minute) })
 
 		case *events.LoggedOut:
