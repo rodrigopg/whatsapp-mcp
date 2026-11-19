@@ -56,7 +56,7 @@ def duration(path):
 
 
 def rows(db, since, chat):
-    con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+    con = sqlite3.connect(Path(db).resolve().as_uri() + "?mode=ro", uri=True)
     q = ("SELECT id, chat_jid, content, filename, timestamp FROM messages "
          "WHERE is_from_me = 1 AND media_type = 'audio' AND COALESCE(content, '') != '' ")
     args = []
