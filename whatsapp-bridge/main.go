@@ -178,18 +178,20 @@ func (store *MessageStore) StoreSender(jid, pushName, fullName, firstName, busin
 	if jid == "" {
 		return nil
 	}
-	_, err := store.db.Exec(`
-		INSERT INTO senders (jid, push_name, full_name, first_name, business_name, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?)
-		ON CONFLICT(jid) DO UPDATE SET
-			push_name     = COALESCE(NULLIF(excluded.push_name, ''),     senders.push_name),
-			full_name     = COALESCE(NULLIF(excluded.full_name, ''),     senders.full_name),
-			first_name    = COALESCE(NULLIF(excluded.first_name, ''),    senders.first_name),
-			business_name = COALESCE(NULLIF(excluded.business_name, ''), senders.business_name),
-			updated_at    = excluded.updated_at
-	`, jid, pushName, fullName, firstName, businessName, time.Now())
+	_, err := store.db.Exec(senderUpsertSQL, jid, pushName, fullName, firstName, businessName, time.Now())
 	return err
 }
+
+const senderUpsertSQL = `
+	INSERT INTO senders (jid, push_name, full_name, first_name, business_name, updated_at)
+	VALUES (?, ?, ?, ?, ?, ?)
+	ON CONFLICT(jid) DO UPDATE SET
+		push_name     = COALESCE(NULLIF(excluded.push_name, ''),     senders.push_name),
+		full_name     = COALESCE(NULLIF(excluded.full_name, ''),     senders.full_name),
+		first_name    = COALESCE(NULLIF(excluded.first_name, ''),    senders.first_name),
+		business_name = COALESCE(NULLIF(excluded.business_name, ''), senders.business_name),
+		updated_at    = excluded.updated_at
+`
 
 // ResolveName returns the best human-readable name for a JID from the senders table.
 func (store *MessageStore) ResolveName(jid string) string {
@@ -222,13 +224,32 @@ func SyncAllContacts(client *whatsmeow.Client, store *MessageStore, logger waLog
 		logger.Warnf("Failed to sync contacts: %v", err)
 		return
 	}
-	count := 0
+	// One transaction: ~3k autocommit writes took ~35 s and starved every other writer at connect
+	// ("database is locked"); in one commit they take ~0.1 s.
+	tx, err := store.db.Begin()
+	if err != nil {
+		logger.Warnf("Failed to sync contacts: %v", err)
+		return
+	}
+	defer tx.Rollback()
+	stmt, err := tx.Prepare(senderUpsertSQL)
+	if err != nil {
+		logger.Warnf("Failed to sync contacts: %v", err)
+		return
+	}
+	defer stmt.Close()
+	now := time.Now()
 	for jid, info := range contacts {
-		if err := store.StoreSender(jid.String(), info.PushName, info.FullName, info.FirstName, info.BusinessName); err == nil {
-			count++
+		if _, err := stmt.Exec(jid.String(), info.PushName, info.FullName, info.FirstName, info.BusinessName, now); err != nil {
+			logger.Warnf("Failed to sync contacts: %v", err)
+			return
 		}
 	}
-	logger.Infof("Synced %d contacts into senders table", count)
+	if err := tx.Commit(); err != nil {
+		logger.Warnf("Failed to sync contacts: %v", err)
+		return
+	}
+	logger.Infof("Synced %d contacts into senders table", len(contacts))
 }
 
 // Store a chat in the database
