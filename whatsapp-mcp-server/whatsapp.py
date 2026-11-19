@@ -36,6 +36,10 @@ _sender_name_cache: Dict[str, str] = {}
 class BridgeError(RuntimeError):
     """A bridge failure safe to show to MCP clients."""
 
+    def __init__(self, message: str, status: Optional[int] = None):
+        super().__init__(message)
+        self.status = status
+
 
 def _auth_headers() -> Dict[str, str]:
     if WHATSAPP_API_AUTH_TOKEN:
@@ -70,7 +74,7 @@ def _api_post(path: str, payload: dict, timeout: int = REQUEST_TIMEOUT) -> dict:
     if response.status_code == 401:
         raise BridgeError("Bridge authentication failed (HTTP 401); check WHATSAPP_API_AUTH_TOKEN")
     if response.status_code != 200:
-        raise BridgeError(f"Bridge request failed (HTTP {response.status_code})")
+        raise BridgeError(f"Bridge request failed (HTTP {response.status_code})", response.status_code)
     try:
         result = response.json()
     except ValueError:
@@ -286,11 +290,17 @@ def get_message_context(
     after: int = 5
 ) -> MessageContext:
     """Get context around a specific message."""
-    result = _api_post("/message_context", {
-        "message_id": message_id,
-        "before": before,
-        "after": after,
-    })
+    try:
+        result = _api_post("/message_context", {
+            "message_id": message_id,
+            "before": before,
+            "after": after,
+        })
+    except BridgeError as e:
+        # The bridge answers an unknown message ID with HTTP 400; that is "not found", not a bridge failure.
+        if e.status in (400, 404):
+            raise ValueError(f"Message with ID {message_id} not found") from None
+        raise
 
     msg_data = result.get("message")
     if not msg_data:
