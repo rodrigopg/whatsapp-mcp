@@ -68,15 +68,7 @@ func (s *connectionSupervisor) handle(evt any) {
 		s.log.Warnf("Disconnected from WhatsApp; whatsmeow reconnects automatically")
 	case *events.StreamReplaced:
 		// Two bridges on one session keep replacing each other, which risks a ban: back off.
-		s.mu.Lock()
-		if s.now().Sub(s.lastReplaced) > time.Hour {
-			s.replacedPause = 0
-		}
-		s.replacedPause = min(max(2*s.replacedPause, streamReplacedMinPause), streamReplacedMaxPause)
-		s.lastReplaced = s.now()
-		pause := s.replacedPause
-		s.holdUntil = s.now().Add(pause)
-		s.mu.Unlock()
+		pause := s.backOff()
 		s.log.Errorf("Another client took over this WhatsApp session (a second bridge on the same store?); reconnecting in %v", pause)
 		s.after(pause, s.reconnect)
 	case *events.TemporaryBan:
@@ -95,7 +87,10 @@ func (s *connectionSupervisor) handle(evt any) {
 		s.mu.Unlock()
 		s.log.Errorf("WhatsApp rejected this client version: update go.mau.fi/whatsmeow and rebuild the bridge. Reads keep working; nothing is sent or received until then.")
 	case *events.ConnectFailure:
-		s.log.Errorf("WhatsApp refused the connection (%s); retrying every %v", v.Reason, watchdogInterval)
+		// Retrying a refused login every minute forever looks like abuse: back off like StreamReplaced.
+		pause := s.backOff()
+		s.log.Errorf("WhatsApp refused the connection (%s); retrying in %v", v.Reason, pause)
+		s.after(pause, s.reconnect)
 	case *events.LoggedOut:
 		s.mu.Lock()
 		s.stopped = true
@@ -161,6 +156,19 @@ func failOnPanic(log waLog.Logger, handler func(any) bool) func(any) bool {
 		}()
 		return handler(evt)
 	}
+}
+
+// backOff doubles the reconnect pause (reset after a quiet hour) and holds the watchdog for it.
+func (s *connectionSupervisor) backOff() time.Duration {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.now().Sub(s.lastReplaced) > time.Hour {
+		s.replacedPause = 0
+	}
+	s.replacedPause = min(max(2*s.replacedPause, streamReplacedMinPause), streamReplacedMaxPause)
+	s.lastReplaced = s.now()
+	s.holdUntil = s.now().Add(s.replacedPause)
+	return s.replacedPause
 }
 
 func (s *connectionSupervisor) reconnect() {
