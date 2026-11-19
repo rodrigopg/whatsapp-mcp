@@ -11,7 +11,9 @@ class TestUnknownHistorySender(unittest.TestCase):
                 message = whatsapp._message_from_dict({
                     "sender": sender, "content": "preserved history", "id": "history",
                 })
-                self.assertIn("From: Unknown sender: preserved history", whatsapp.format_message(message))
+                output = whatsapp.format_message(message)
+                self.assertIn("From: Unknown sender: [Message ID: history", output)
+                self.assertTrue(output.endswith("preserved history\n"))
                 api.assert_not_called()
 
     def test_own_message_still_displays_me(self):

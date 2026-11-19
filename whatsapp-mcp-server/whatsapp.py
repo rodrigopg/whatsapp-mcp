@@ -193,8 +193,9 @@ def format_message(message: Message, show_chat_info: bool = True) -> None:
         output += f"[{ts_str}] "
 
     content_prefix = ""
-    if hasattr(message, 'media_type') and message.media_type:
-        content_prefix = f"[{message.media_type} - Message ID: {message.id} - Chat JID: {message.chat_jid}] "
+    if message.id:
+        ids = f"Message ID: {message.id} - Chat JID: {message.chat_jid}"
+        content_prefix = f"[{message.media_type} - {ids}] " if message.media_type else f"[{ids}] "
 
     try:
         sender_name = get_sender_name(message.sender) if not message.is_from_me else "Me"
