@@ -760,6 +760,29 @@ def get_group_info(jid: str) -> Tuple[bool, str, Optional[dict]]:
         return False, f"Unexpected error: {str(e)}", None
 
 
+def request_chat_history(chat_jid: str, count: int = 50) -> Tuple[bool, str]:
+    if not chat_jid or not chat_jid.strip():
+        return False, "chat_jid is required"
+    if type(count) is not int or not 1 <= count <= 50:
+        return False, "count must be between 1 and 50"
+    try:
+        response = _api_request("POST", "/chat/backfill", timeout=SEND_TIMEOUT,
+                                json={"chat_jid": chat_jid, "count": count})
+        try:
+            result = response.json()
+        except ValueError:
+            if response.status_code != 200:
+                return False, f"Bridge request failed (HTTP {response.status_code}): {response.text.strip()[:200]}"
+            return False, "Bridge returned invalid JSON (HTTP 200)"
+        if not isinstance(result, dict):
+            return False, f"Bridge returned an unexpected response (HTTP {response.status_code})"
+        if response.status_code != 200:
+            return False, result.get("error") or result.get("message") or f"Bridge request failed (HTTP {response.status_code})"
+        return bool(result.get("success")), result.get("message", "Unknown response")
+    except requests.RequestException as e:
+        return False, f"Request error: {e}"
+
+
 def archive_chat(chat_jid: str, archive: bool) -> Tuple[bool, str]:
     try:
         if not chat_jid or not chat_jid.strip():
