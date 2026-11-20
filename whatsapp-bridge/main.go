@@ -3191,6 +3191,19 @@ func handleHealthz(connected func() bool) http.HandlerFunc {
 
 // Start a REST API server to expose the WhatsApp client functionality
 func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, port int) {
+	http.HandleFunc("/status", handleStatus(func() statusInfo {
+		qrState.RLock()
+		hasQR := qrState.png != nil
+		qrState.RUnlock()
+		si := statusInfo{Connected: client != nil && client.IsConnected() && client.IsLoggedIn(),
+			HasQR: hasQR, Uptime: time.Since(startedAt).Round(time.Second).String()}
+		if client != nil && client.Store.ID != nil {
+			si.Account = maskAccount(client.Store.ID.User)
+		}
+		si.Messages, si.LastMsg = lastMessage(messageStore.db)
+		return si
+	}))
+
 	http.HandleFunc("/healthz", handleHealthz(func() bool {
 		return client != nil && client.IsConnected() && client.IsLoggedIn()
 	}))
@@ -3922,7 +3935,7 @@ img{border:8px solid white;border-radius:8px;box-shadow:0 4px 20px rgba(0,0,0,.2
 
 	// If BIND_ADDR is not loopback, an auth token is required — the /api/* routes
 	// can send messages and read message history, so anyone who can reach the port
-	// must present a bearer token. /qr, /qr.png and /healthz stay open (pairing flow and liveness probe).
+	// must present a bearer token. /qr, /qr.png, /status and /healthz stay open (pairing flow and liveness probe).
 	authToken := os.Getenv("API_AUTH_TOKEN")
 	if bindAddr != "127.0.0.1" && bindAddr != "localhost" && authToken == "" {
 		fmt.Println("FATAL: BIND_ADDR is set to a non-loopback address but API_AUTH_TOKEN is not set. Refusing to start exposed without auth.")
