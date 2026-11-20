@@ -900,9 +900,8 @@ def get_poll_votes(chat_jid: str, message_id: str) -> Tuple[bool, str, Optional[
 def react_to_message(chat_jid: str, message_id: str, emoji: str, from_me: bool = True) -> Tuple[bool, str]:
     """React to a message with an emoji ("" removes the reaction).
 
-    from_me defaults True (your own message). from_me=False works only in direct
-    chats; in group chats the bridge returns an error because the original
-    sender's JID isn't available.
+    from_me defaults True (your own message). With from_me=False in a group,
+    the message and its author must be available in the bridge's local history.
     """
     try:
         if not chat_jid or not chat_jid.strip():
@@ -959,9 +958,10 @@ def edit_message(chat_jid: str, message_id: str, new_text: str, from_me: bool = 
 def delete_message(chat_jid: str, message_id: str, from_me: bool = True) -> Tuple[bool, str]:
     """Delete a message for everyone (revoke).
 
-    from_me defaults True (your own message). from_me=False works only in direct
-    chats; in group chats the bridge returns an error because the original
-    sender's JID isn't available.
+    from_me defaults True (your own message). With from_me=False in a group,
+    the message and its author must be available in the bridge's local history.
+    Revoking another group member's message requires admin permission; WhatsApp
+    may reject the revoke.
     """
     try:
         if not chat_jid or not chat_jid.strip():

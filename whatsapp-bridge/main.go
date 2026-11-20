@@ -1009,12 +1009,8 @@ type RevokeRequest struct {
 	FromMe    bool   `json:"from_me"`
 }
 
-// actionSenderJID derives the sender JID to use for react/revoke actions.
-// When fromMe is true the sender is the local account (own messages are the
-// common case for react/edit/revoke). When fromMe is false we don't have the
-// original message author available here, so we fall back to chatJID, which
-// is only correct for 1:1 chats; group-chat revoke/react on someone else's
-// message needs the participant JID plumbed in from the caller (not yet supported).
+// actionSenderJID resolves own messages and direct-chat peers. Other group authors
+// are read from the stored message by groupMessageSender.
 func actionSenderJID(ownID *types.JID, chatJID types.JID, fromMe bool) types.JID {
 	if fromMe && ownID != nil {
 		return ownID.ToNonAD()
@@ -1022,11 +1018,8 @@ func actionSenderJID(ownID *types.JID, chatJID types.JID, fromMe bool) types.JID
 	return chatJID
 }
 
-// handleReact returns the handler for POST /api/react. Empty emoji removes an
-// existing reaction. Reacting to another participant's message in a group
-// (from_me=false) is rejected: actionSenderJID would fall back to the group's
-// own JID as sender, producing a malformed (but silently-accepted) message key.
-func handleReact(client *whatsmeow.Client) http.HandlerFunc {
+// handleReact returns the handler for POST /api/react. Empty emoji removes a reaction.
+func handleReact(client messageActionClient, messageStore *MessageStore) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -1042,11 +1035,12 @@ func handleReact(client *whatsmeow.Client) http.HandlerFunc {
 			http.Error(w, fmt.Sprintf("Invalid chat_jid: %v", err), http.StatusBadRequest)
 			return
 		}
+		senderJID := chatJID
 		if !req.FromMe && chatJID.Server == types.GroupServer {
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusBadRequest)
-			json.NewEncoder(w).Encode(MarkChatResponse{Success: false, Message: "reacting to another participant's message in a group is not supported (participant JID unavailable)"})
-			return
+			if senderJID, err = groupMessageSender(messageStore, chatJID, req.MessageID); err != nil {
+				writeActionError(w, err)
+				return
+			}
 		}
 		if client == nil || !client.IsConnected() {
 			w.Header().Set("Content-Type", "application/json")
@@ -1054,7 +1048,14 @@ func handleReact(client *whatsmeow.Client) http.HandlerFunc {
 			json.NewEncoder(w).Encode(MarkChatResponse{Success: false, Message: "WhatsApp client not connected"})
 			return
 		}
-		senderJID := actionSenderJID(client.Store.ID, chatJID, req.FromMe)
+		if req.FromMe {
+			senderJID = actionSenderJID(client.OwnID(), chatJID, true)
+		} else if chatJID.Server == types.GroupServer {
+			if senderJID, err = client.GroupAuthor(context.Background(), chatJID, senderJID); err != nil {
+				writeActionError(w, err)
+				return
+			}
+		}
 		builtMsg := client.BuildReaction(chatJID, senderJID, types.MessageID(req.MessageID), req.Emoji)
 		if _, err := client.SendMessage(context.Background(), chatJID, builtMsg); err != nil {
 			w.Header().Set("Content-Type", "application/json")
@@ -1131,11 +1132,8 @@ func handleEdit(client *whatsmeow.Client, messageStore *MessageStore) http.Handl
 	}
 }
 
-// handleRevoke returns the handler for POST /api/revoke. Revoking another
-// participant's message in a group (from_me=false) is rejected for the same
-// reason as handleReact: no participant JID available, so actionSenderJID
-// would fall back to the group's own JID and produce a malformed revoke.
-func handleRevoke(client *whatsmeow.Client, messageStore *MessageStore) http.HandlerFunc {
+// handleRevoke returns the handler for POST /api/revoke.
+func handleRevoke(client messageActionClient, messageStore *MessageStore) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -1151,11 +1149,12 @@ func handleRevoke(client *whatsmeow.Client, messageStore *MessageStore) http.Han
 			http.Error(w, fmt.Sprintf("Invalid chat_jid: %v", err), http.StatusBadRequest)
 			return
 		}
+		senderJID := chatJID
 		if !req.FromMe && chatJID.Server == types.GroupServer {
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusBadRequest)
-			json.NewEncoder(w).Encode(MarkChatResponse{Success: false, Message: "revoking another participant's message in a group is not supported (participant JID unavailable)"})
-			return
+			if senderJID, err = groupMessageSender(messageStore, chatJID, req.MessageID); err != nil {
+				writeActionError(w, err)
+				return
+			}
 		}
 		if client == nil || !client.IsConnected() {
 			w.Header().Set("Content-Type", "application/json")
@@ -1163,7 +1162,14 @@ func handleRevoke(client *whatsmeow.Client, messageStore *MessageStore) http.Han
 			json.NewEncoder(w).Encode(MarkChatResponse{Success: false, Message: "WhatsApp client not connected"})
 			return
 		}
-		senderJID := actionSenderJID(client.Store.ID, chatJID, req.FromMe)
+		if req.FromMe {
+			senderJID = actionSenderJID(client.OwnID(), chatJID, true)
+		} else if chatJID.Server == types.GroupServer {
+			if senderJID, err = client.GroupAuthor(context.Background(), chatJID, senderJID); err != nil {
+				writeActionError(w, err)
+				return
+			}
+		}
 		builtMsg := client.BuildRevoke(chatJID, senderJID, types.MessageID(req.MessageID))
 		if _, err := client.SendMessage(context.Background(), chatJID, builtMsg); err != nil {
 			w.Header().Set("Content-Type", "application/json")
@@ -1171,7 +1177,17 @@ func handleRevoke(client *whatsmeow.Client, messageStore *MessageStore) http.Han
 			json.NewEncoder(w).Encode(MarkChatResponse{Success: false, Message: fmt.Sprintf("SendMessage error: %v", err)})
 			return
 		}
-		applyOwnProtocolAction(client, messageStore, chatJID, req.MessageID, revokedContent)
+		if messageStore != nil {
+			chat := client.NormalizeChat(chatJID).String()
+			if !req.FromMe && chatJID.Server == types.GroupServer {
+				_, err = messageStore.db.Exec("UPDATE messages SET content = ? WHERE id = ? AND chat_jid = ? AND is_from_me = 0", revokedContent, req.MessageID, chat)
+			} else {
+				err = messageStore.ApplyEdit(req.MessageID, chat, revokedContent, true, "")
+			}
+			if err != nil {
+				ownActionLogger.Warnf("Failed to apply revoke locally: %v", err)
+			}
+		}
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(MarkChatResponse{Success: true, Message: fmt.Sprintf("Message %s revoked", req.MessageID)})
 	}
@@ -3829,13 +3845,13 @@ img{border:8px solid white;border-radius:8px;box-shadow:0 4px 20px rgba(0,0,0,.2
 	})
 
 	// Handler for reacting to a message. Empty emoji removes an existing reaction.
-	http.HandleFunc("/api/react", handleReact(client))
+	http.HandleFunc("/api/react", handleReact(whatsmeowActions{client}, messageStore))
 
 	// Handler for editing the text of a previously sent message.
 	http.HandleFunc("/api/edit", handleEdit(client, messageStore))
 
 	// Handler for revoking (deleting for everyone) a previously sent message.
-	http.HandleFunc("/api/revoke", handleRevoke(client, messageStore))
+	http.HandleFunc("/api/revoke", handleRevoke(whatsmeowActions{client}, messageStore))
 
 	// Handler for adding, removing, promoting or demoting group participants.
 	http.HandleFunc("/api/group_participants", handleGroupParticipants(client))
