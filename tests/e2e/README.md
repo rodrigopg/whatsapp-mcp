@@ -28,10 +28,9 @@ Pair each account once: start the bridges, open `http://127.0.0.1:<E2E_A_PORT>/q
 
 ## Reading the report
 
-`run.sh` writes `report-<date>.md` and prints it. Each line is `PASS` or `FAIL`; a failure includes the last 25 lines of output. The final `Result` is `PASS` only if every step passed. For tier 1 the unittest summary is in the fenced block: `OK`, plus counts for skipped and expected failures.
+`run.sh` writes `report-<date>.md` and prints it. Each line is `PASS` or `FAIL`; a failure includes the last 25 lines of output. The final `Result` is `PASS` only if every step passed. For tier 1 the unittest summary is in the fenced block: `OK`, plus the count of skipped tests.
 
 ## Known gaps
 
-- `@unittest.expectedFailure` marks a known bridge gap (currently: incoming edits are not applied to the stored message). When the gap is fixed the test flips to "unexpected success", which fails the run: remove the decorator then.
 - Tests are ordered (`test_NN`) and share ids; if one fails, dependents report `skipped` ("prerequisite not available"), which hides their coverage for that run.
-- App-state calls (read/unread/archive) sometimes get a transient server-side 500 from WhatsApp; they are retried, but persistent failures still fail the test.
+- App-state calls (read/unread/archive) sometimes get a transient server-side 500 from WhatsApp; they are retried up to 3 times. If the last try is still a WhatsApp-side app-state error (conflict or internal-server-error), the test is skipped, not failed; any other error fails it.
