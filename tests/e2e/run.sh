@@ -41,11 +41,14 @@ if [ "${1:-}" != "offline" ]; then
     run "bridges up" "${COMPOSE[@]}" up -d
   fi
   echo '```'
-  uv run --project "$ROOT/whatsapp-mcp-server" python e2e.py 2>&1 | tail -80
-  RC=${PIPESTATUS[0]}
+  mkdir -p .run; uv run --project "$ROOT/whatsapp-mcp-server" python e2e.py > .run/e2e.out 2>&1
+  RC=$?
+  tail -80 .run/e2e.out
   echo '```'
   [ "$MODE" = native ] && ./native.sh stop
   [ "$RC" -eq 0 ] || FAILED=1
+  # Last, so a caller that keeps only the tail of this output still sees every failing test.
+  grep -E '^(FAIL|ERROR): ' .run/e2e.out | sed 's/^/- /'
 fi
 
 step "Result"

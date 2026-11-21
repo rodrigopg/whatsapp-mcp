@@ -408,7 +408,11 @@ class E2E(unittest.TestCase):
         self.assertEqual(code, 200)
         jids = [c["jid"] for c in d["chats"]]
         self.assertIn(chat_a, jids)
-        self.assertFalse([j for j in jids if j.endswith("@lid")], "LID chats were not migrated to phone JIDs")
+        # A real account keeps @lid chats for contacts whose number it never learned; only B's LID is known here.
+        code, r = get("a", "/resolve_contact", phone=PHONE["b"])
+        self.assertEqual(code, 200, r)
+        b_lids = [j for j in r.get("jids") or [] if j.endswith("@lid")]
+        self.assertFalse(set(b_lids) & set(jids), "B's LID chat was not migrated to its phone JID")
         now = datetime.now(timezone.utc).astimezone()
         code, d = post("a", "/chats/active", {"after": (now - timedelta(hours=6)).isoformat(), "before": (now + timedelta(hours=1)).isoformat()})
         self.assertEqual(code, 200, d)
