@@ -13,9 +13,16 @@ import (
 )
 
 type fakeReconnecter struct {
-	calls int
-	wait  time.Duration
-	err   error
+	calls     int
+	wait      time.Duration
+	err       error
+	unpairs   int
+	unpairErr error
+}
+
+func (f *fakeReconnecter) unpair() error {
+	f.unpairs++
+	return f.unpairErr
 }
 
 func (f *fakeReconnecter) forceReconnect() (time.Duration, error) {
@@ -190,7 +197,7 @@ func TestPanelStates(t *testing.T) {
 		"offline":   {Paired: true},
 		"waiting":   {},
 	} {
-		if got := panelState(si, now); got != want {
+		if got := panelState(si, now, 6*time.Hour); got != want {
 			t.Errorf("panelState(%+v) = %q, want %q", si, got, want)
 		}
 		p, _, mux := testPanel("tok", si)

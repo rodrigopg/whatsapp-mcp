@@ -54,6 +54,7 @@ class OwnerOAuth:
     def __init__(self, db_path: str, passphrase: str, static_token: str, public_url: str, now: Callable[[], float] = time.time):
         self.passphrase, self.static_token, self.public_url, self.now = passphrase, static_token, public_url, now
         self._db = sqlite3.connect(db_path, check_same_thread=False)
+        # The bridge panel reads and deletes from these tables (whatsapp-bridge/settings.go): keep them in step.
         self._db.executescript(
             "CREATE TABLE IF NOT EXISTS clients (client_id TEXT PRIMARY KEY, body TEXT NOT NULL);"
             "CREATE TABLE IF NOT EXISTS tokens (hash TEXT PRIMARY KEY, kind TEXT NOT NULL, client_id TEXT NOT NULL,"

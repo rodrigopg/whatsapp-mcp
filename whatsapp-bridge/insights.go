@@ -271,7 +271,7 @@ func (p *panel) insightsPage(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	v := insightsView{Account: p.info().Account, Authed: p.authed(r), HasToken: p.token != "", Days: 30, Periods: []int{7, 30, 90},
+	v := insightsView{Account: p.info().Account, Authed: p.authed(r), HasToken: p.keyed(), Days: 30, Periods: []int{7, 30, 90},
 		Hide: r.URL.Query().Get("hide") == "1"}
 	if d := r.URL.Query().Get("d"); d == "7" || d == "90" {
 		fmt.Sscan(d, &v.Days)
