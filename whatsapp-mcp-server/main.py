@@ -767,8 +767,8 @@ def react_to_message(
         message_id: The ID of the message to react to
         emoji: The emoji to react with, or "" to remove the reaction
         from_me: Whether the target message was sent by you (defaults True, your own
-            message). Setting from_me=False works only in direct chats; in group
-            chats it returns an error because the original sender's JID isn't available.
+            message). With from_me=False in a group, the message and its author
+            must be available in the bridge's local history.
     """
     success, message = whatsapp_react_to_message(chat_jid, message_id, emoji, from_me=from_me)
     return {"success": success, "message": message}
@@ -807,8 +807,9 @@ def delete_message(
         chat_jid: The JID of the chat (e.g. 5511999999999@s.whatsapp.net or group@g.us)
         message_id: The ID of the message to delete
         from_me: Whether the target message was sent by you (defaults True, your own
-            message). Setting from_me=False works only in direct chats; in group
-            chats it returns an error because the original sender's JID isn't available.
+            message). With from_me=False in a group, the message and its author
+            must be available in the bridge's local history, and you must be a group admin.
+            WhatsApp may reject the revoke if you lack permission.
     """
     success, message = whatsapp_delete_message(chat_jid, message_id, from_me=from_me)
     return {"success": success, "message": message}
