@@ -18,6 +18,14 @@ import (
 type fakeSession struct {
 	paired, connected bool
 	connects          int
+	unpairErr         error
+}
+
+func (f *fakeSession) Unpair() error {
+	if f.unpairErr == nil {
+		f.paired, f.connected = false, false
+	}
+	return f.unpairErr
 }
 
 func (f *fakeSession) Connect() error    { f.connects++; f.connected = true; return nil }

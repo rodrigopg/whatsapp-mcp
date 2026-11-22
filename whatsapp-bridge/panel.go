@@ -16,6 +16,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -23,7 +24,6 @@ import (
 )
 
 const (
-	stallAfter       = 6 * time.Hour   // connected with no newer message than this: amber warning
 	pairingQuiet     = 2 * time.Minute // history sync counts as finished after this long without a chunk
 	panelCookie      = "panel"
 	panelCookieTTL   = 30 * 24 * time.Hour
@@ -80,12 +80,13 @@ func loggedOutAt() time.Time {
 	return time.Time{}
 }
 
-// panelState names the one banner /status shows.
-func panelState(si statusInfo, now time.Time) string {
+// panelState names the one banner /status shows. stall is how long without a new message turns
+// "connected" amber; 0 never does.
+func panelState(si statusInfo, now time.Time, stall time.Duration) string {
 	switch {
 	case si.Connected && si.Pairing:
 		return "pairing"
-	case si.Connected && !si.LastMsgAt.IsZero() && now.Sub(si.LastMsgAt) >= stallAfter:
+	case si.Connected && stall > 0 && !si.LastMsgAt.IsZero() && now.Sub(si.LastMsgAt) >= stall:
 		return "stall"
 	case si.Connected:
 		return "ok"
@@ -159,13 +160,17 @@ func diagnoseConnector(ctx context.Context, client *http.Client, publicURL strin
 
 type reconnecter interface {
 	forceReconnect() (wait time.Duration, err error)
+	unpair() error
 }
 
 // panel is /status and its actions. The page is open and read-only; the connector link and every
-// action need the panel key (API_AUTH_TOKEN), or a loopback Host when no token is configured.
+// action need the panel key (API_AUTH_TOKEN, or the one generated in Settings), or a loopback Host
+// when neither exists.
 type panel struct {
 	token     string
-	publicURL string // MCP_PUBLIC_URL without a trailing slash; "" when the remote connector is not set up
+	publicURL string         // MCP_PUBLIC_URL without a trailing slash; "" when the remote connector is not set up
+	oauthDB   string         // MCP_OAUTH_DB: the remote connector's logins; "" hides the connected-apps list
+	set       *settingsStore // nil in tests that do not touch settings: defaults, nothing saved
 	info      func() statusInfo
 	sup       reconnecter
 	client    *http.Client
@@ -187,6 +192,7 @@ func newPanel(token, publicURL string, info func() statusInfo, sup reconnecter) 
 func (p *panel) register(mux *http.ServeMux) {
 	mux.HandleFunc("/status", p.page)
 	mux.HandleFunc("/status/insights", p.insightsPage)
+	p.registerSettings(mux)
 	mux.HandleFunc("/status/login", p.login)
 	mux.HandleFunc("/status/logout", p.action(func(w http.ResponseWriter, r *http.Request) string {
 		http.SetCookie(w, &http.Cookie{Name: panelCookie, Path: "/status", MaxAge: -1})
@@ -210,10 +216,38 @@ func (p *panel) register(mux *http.ServeMux) {
 	}))
 }
 
+// keyed: a panel key exists, so the panel asks for it.
+func (p *panel) keyed() bool { return p.token != "" || p.set.get().PanelKeyHash != "" }
+
+// keyOK checks a typed key: the one generated in Settings when there is one, else API_AUTH_TOKEN.
+func (p *panel) keyOK(given string) bool {
+	if h := p.set.get().PanelKeyHash; h != "" {
+		sum := sha256.Sum256([]byte(given))
+		return subtle.ConstantTimeCompare([]byte(hex.EncodeToString(sum[:])), []byte(h)) == 1
+	}
+	return subtle.ConstantTimeCompare([]byte(given), []byte(p.token)) == 1
+}
+
+// cookieValue changes with the key and with the epoch, so a new key or "sign out everywhere"
+// invalidates every cookie handed out before.
 func (p *panel) cookieValue() string {
-	mac := hmac.New(sha256.New, []byte(p.token))
-	mac.Write([]byte("panel"))
+	s := p.set.get()
+	key, msg := p.token, "panel"
+	if s.PanelKeyHash != "" {
+		key = s.PanelKeyHash
+	}
+	if s.PanelEpoch > 0 {
+		msg += strconv.Itoa(s.PanelEpoch)
+	}
+	mac := hmac.New(sha256.New, []byte(key))
+	mac.Write([]byte(msg))
 	return hex.EncodeToString(mac.Sum(nil))
+}
+
+func (p *panel) setCookie(w http.ResponseWriter, r *http.Request) {
+	http.SetCookie(w, &http.Cookie{Name: panelCookie, Value: p.cookieValue(), Path: "/status",
+		MaxAge: int(panelCookieTTL.Seconds()), HttpOnly: true, SameSite: http.SameSiteStrictMode,
+		Secure: r.TLS != nil || r.Header.Get("X-Forwarded-Proto") == "https"})
 }
 
 func loopbackHost(hostport string) bool {
@@ -224,9 +258,9 @@ func loopbackHost(hostport string) bool {
 	return host == "localhost" || host == "127.0.0.1" || host == "::1" || host == "[::1]"
 }
 
-// authed: the panel cookie, or (no token configured) a loopback Host, which a DNS-rebinding page cannot fake.
+// authed: the panel cookie, or (no key at all) a loopback Host, which a DNS-rebinding page cannot fake.
 func (p *panel) authed(r *http.Request) bool {
-	if p.token == "" {
+	if !p.keyed() {
 		return loopbackHost(r.Host)
 	}
 	c, err := r.Cookie(panelCookie)
@@ -243,23 +277,33 @@ func sameOrigin(r *http.Request) bool {
 	return err == nil && u.Host != "" && u.Host == r.Host
 }
 
-// action wraps a state-changing route: POST, same origin, signed in; then back to the page.
+// allowed is the gate of every state-changing route: POST, same origin, signed in.
+func (p *panel) allowed(w http.ResponseWriter, r *http.Request) bool {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return false
+	}
+	if !sameOrigin(r) || !p.authed(r) {
+		http.Error(w, "Forbidden", http.StatusForbidden)
+		return false
+	}
+	return true
+}
+
+// action wraps a state-changing route: allowed, then back to the page it came from.
 func (p *panel) action(do func(http.ResponseWriter, *http.Request) (flash string)) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost {
-			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-			return
+		if p.allowed(w, r) {
+			back(w, r, do(w, r))
 		}
-		if !sameOrigin(r) || !p.authed(r) {
-			http.Error(w, "Forbidden", http.StatusForbidden)
-			return
-		}
-		back(w, r, do(w, r))
 	}
 }
 
 func back(w http.ResponseWriter, r *http.Request, flash string) {
 	target := "/status"
+	if strings.HasPrefix(r.URL.Path, "/status/settings/") {
+		target = "/status/settings"
+	}
 	if flash != "" {
 		target += "?m=" + flash
 	}
@@ -271,7 +315,7 @@ func (p *panel) login(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	if !sameOrigin(r) || p.token == "" {
+	if !sameOrigin(r) || !p.keyed() {
 		http.Error(w, "Forbidden", http.StatusForbidden)
 		return
 	}
@@ -280,7 +324,7 @@ func (p *panel) login(w http.ResponseWriter, r *http.Request) {
 		p.fails, p.failsFrom = 0, p.now()
 	}
 	locked := p.fails >= loginMaxFails
-	ok := !locked && subtle.ConstantTimeCompare([]byte(r.FormValue("key")), []byte(p.token)) == 1
+	ok := !locked && p.keyOK(r.FormValue("key"))
 	if !locked && !ok {
 		p.fails++
 	}
@@ -291,9 +335,7 @@ func (p *panel) login(w http.ResponseWriter, r *http.Request) {
 	case !ok:
 		back(w, r, "key")
 	default:
-		http.SetCookie(w, &http.Cookie{Name: panelCookie, Value: p.cookieValue(), Path: "/status",
-			MaxAge: int(panelCookieTTL.Seconds()), HttpOnly: true, SameSite: http.SameSiteStrictMode,
-			Secure: r.TLS != nil || r.Header.Get("X-Forwarded-Proto") == "https"})
+		p.setCookie(w, r)
 		back(w, r, "")
 	}
 }
@@ -338,6 +380,18 @@ func flashText(code string) (text string, bad bool) {
 	switch {
 	case code == "rc":
 		return "Reconectado.", false
+	case code == "saved":
+		return "Salvo.", false
+	case code == "revoked":
+		return "App desligado. Para voltar, ele vai pedir a senha do conector.", false
+	case code == "savefail":
+		return "Não deu para salvar agora. Nada mudou.", true
+	case code == "invalid":
+		return "Valor inválido. Nada mudou.", true
+	case code == "confirm":
+		return "Digite a palavra exatamente para confirmar.", true
+	case code == "unpairfail":
+		return "Não deu para desconectar: a bridge precisa estar conectada ao WhatsApp. Reconecte e tente de novo.", true
 	case code == "key":
 		return "Chave errada. Confira e tente de novo.", true
 	case code == "held":
@@ -360,7 +414,7 @@ func (p *panel) page(w http.ResponseWriter, r *http.Request) {
 	}
 	si := p.info()
 	now := p.now()
-	v := panelView{statusInfo: si, State: panelState(si, now), HasToken: p.token != "", Authed: p.authed(r),
+	v := panelView{statusInfo: si, State: panelState(si, now, p.set.get().stallAfter()), HasToken: p.keyed(), Authed: p.authed(r),
 		HoldMinutes: int(si.Held.Minutes()) + 1}
 	v.Flash, v.FlashBad = flashText(r.URL.Query().Get("m"))
 	if !si.LastMsgAt.IsZero() {
@@ -442,7 +496,7 @@ var panelTmpl = template.Must(template.New("panel").Parse(`<!DOCTYPE html><html 
 <script>var c=document.getElementById("copy");if(c)c.onclick=function(){var i=document.getElementById("mcpurl"),ok=function(){c.textContent="Copiado"};
 (navigator.clipboard?navigator.clipboard.writeText(i.value):Promise.reject()).then(ok,function(){i.focus();i.select();try{document.execCommand("copy");ok()}catch(e){}})};</script>
 </body></html>
-{{define "nav"}}<nav aria-label="Páginas"><a href="/status"{{if eq . "home"}} aria-current="page"{{end}}>Início</a><a href="/status/insights"{{if eq . "insights"}} aria-current="page"{{end}}>Insights</a></nav>{{end}}
+{{define "nav"}}<nav aria-label="Páginas"><a href="/status"{{if eq . "home"}} aria-current="page"{{end}}>Início</a><a href="/status/insights"{{if eq . "insights"}} aria-current="page"{{end}}>Insights</a><a href="/status/settings"{{if eq . "settings"}} aria-current="page"{{end}}>Configurações</a></nav>{{end}}
 {{define "css"}}:root{--bg:#f6f7f6;--card:#fff;--fg:#1a2421;--muted:#5f6d69;--line:#e0e6e3;--brand:#0d6b5f;--brand-ink:#fff;
 --ok:#17803d;--ok-bg:#e6f4ea;--warn:#9a5b00;--warn-bg:#fdf2dc;--bad:#b42318;--bad-bg:#fdecea;--info:#245ea8;--info-bg:#e7effa}
 @media (prefers-color-scheme:dark){:root{color-scheme:dark;--bg:#101614;--card:#19211f;--fg:#e3eae7;--muted:#97a6a1;--line:#2b3633;--brand:#55c4b1;--brand-ink:#05201b;

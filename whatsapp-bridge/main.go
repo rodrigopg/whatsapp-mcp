@@ -3222,7 +3222,7 @@ func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, super
 		si.Held, si.Stopped = supervisor.holdLeft(), supervisor.isStopped()
 		return si
 	}, supervisor)
-	statusPanel.db = messageStore.db
+	statusPanel.db, statusPanel.set, statusPanel.oauthDB = messageStore.db, appSettings, os.Getenv("MCP_OAUTH_DB")
 	statusPanel.register(http.DefaultServeMux)
 
 	http.HandleFunc("/healthz", handleHealthz(func() bool {
@@ -3964,7 +3964,7 @@ img{border:8px solid white;border-radius:8px;box-shadow:0 4px 20px rgba(0,0,0,.2
 	}
 
 	handler := http.DefaultServeMux
-	var finalHandler http.Handler = stampAPIAccess(handler)
+	var finalHandler http.Handler = stampAPIAccess(readOnlyGuard(appSettings, handler))
 	if authToken != "" {
 		finalHandler = requireBearerToken(authToken, finalHandler)
 	}
@@ -4006,6 +4006,11 @@ func main() {
 	// Create directory for database if it doesn't exist
 	if err := os.MkdirAll("store", 0755); err != nil {
 		logger.Errorf("Failed to create store directory: %v", err)
+		os.Exit(1)
+	}
+	var err error
+	if appSettings, err = loadSettings(settingsPath); err != nil {
+		fmt.Printf("FATAL: cannot read the panel settings (%v). Fix or remove the file; refusing to start without them.\n", err)
 		os.Exit(1)
 	}
 
@@ -4516,6 +4521,10 @@ func startTranscriptionSweep(interval time.Duration) {
 					}
 				}
 			}
+			set := appSettings.get()
+			if set.TranscribeOff {
+				continue // switched off in the panel
+			}
 			cmd := exec.Command(python, script)
 			cmd.Dir = pyDir
 			// Surface the transcriber's output (its DONE summary, per-audio
@@ -4551,6 +4560,7 @@ func startTranscriptionSweep(interval time.Duration) {
 					cmd.Env = append(cmd.Env, fmt.Sprintf("WHATSAPP_API_AUTH_TOKEN=%s", t))
 				}
 			}
+			cmd.Env = append(cmd.Env, set.transcriptionEnv()...) // the panel's choices win over the environment
 			if err := cmd.Start(); err != nil {
 				fmt.Printf("transcription sweep: failed to start: %v\n", err)
 				continue
