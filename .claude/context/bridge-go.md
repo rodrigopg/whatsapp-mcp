@@ -75,3 +75,13 @@ Additive tables created in `NewMessageStore` (each feature owns its schema strin
 
 If the log shows `failed to verify patch vNN: mismatching LTHash` and every archive / mark-read / delete-chat answers 500 "server returned error updating app state", the local copy of that app-state collection drifted (this happened on the personal bridge; it also explains the e2e gate skipping app-state calls for account B). Repair: `POST /api/appstate/resync {"name":"regular_low"}` (`appstate_resync.go`), a whatsmeow full sync of that collection (cached state dropped, refetched); when the server's own patches no longer verify even that fails, and the repair is `{"name":"regular_low","mode":"recovery"}`, which asks the phone (primary device, must be online) for a fresh copy of the collection through `BuildAppStateRecoveryRequest`; whatsmeow processes the answer by itself. Names: regular, regular_low, regular_high, critical_block, critical_unblock_low. Archive uses regular_low.
 
+## Status panel (`panel.go`)
+
+`/status` is the onboarding panel (Portuguese UI, stdlib `html/template`, no JS framework). The open page is read-only; the connector link (`MCP_PUBLIC_URL` + `/mcp`), **Reconectar**, the connector check and "último acesso à API" render only for a signed-in request.
+
+- Panel key = `API_AUTH_TOKEN`. `POST /status/login` sets cookie `panel` = HMAC(token, "panel"), HttpOnly, SameSite=Strict, Path=/status. No token configured: unlocked only for a loopback `Host` (DNS rebinding cannot fake it). 10 wrong keys per 15 min lock sign-in.
+- Every action (`/status/reconnect`, `/status/diagnose`, `/status/logout`) goes through `panel.action`: POST, `Origin`/`Referer` host equal to `Host`, signed in. Add new actions through it, never as a bare handler.
+- `panelState` picks the one banner (ok, stall, pairing, qr, loggedout, held, stopped, offline, waiting). Stall = connected and newest stored message older than 6 h. `store/logged_out` is a marker written on `events.LoggedOut` (it survives the restart) and removed when a QR is scanned.
+- `connectionSupervisor.forceReconnect` = Disconnect + Connect of the same session; refused when held/stopped/unpaired and within 2 minutes of the previous one. The watchdog `reconnect()` is a no-op while the socket looks connected, which is the silent-stall case.
+- `diagnoseConnector` fetches `MCP_PUBLIC_URL/.well-known/oauth-protected-resource/mcp` from the bridge host: proves DNS, certificate, tunnel and MCP server with OAuth; not the vendor's network path nor the passphrase.
+- Screenshots: the panel renders from a `statusInfo` func, so a throwaway `_test.go` serving `newPanel(...).page` with fake states is enough; do not start a real bridge for it.

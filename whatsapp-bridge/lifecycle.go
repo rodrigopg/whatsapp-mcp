@@ -18,10 +18,18 @@ const (
 	streamReplacedMaxPause = 30 * time.Minute
 	logoutPollInterval     = 500 * time.Millisecond
 	logoutDeleteTimeout    = 30 * time.Second
+	forceReconnectCooldown = 2 * time.Minute // repeated connects are a ban risk
+)
+
+var (
+	errReconnectStopped  = errors.New("the session needs a person (new QR or a rebuild)")
+	errReconnectHeld     = errors.New("WhatsApp asked this client to wait")
+	errReconnectCooldown = errors.New("reconnected a moment ago")
 )
 
 type sessionClient interface {
 	Connect() error
+	Disconnect()
 	IsConnected() bool
 	IsPaired() bool
 }
@@ -48,6 +56,7 @@ type connectionSupervisor struct {
 	stopped       bool      // needs a person (rebuild, new QR); reconnecting would only repeat the refusal
 	replacedPause time.Duration
 	lastReplaced  time.Time
+	lastForced    time.Time
 }
 
 func newConnectionSupervisor(client *whatsmeow.Client, log waLog.Logger, sessionDeleted func() bool, deleteSession func() error) *connectionSupervisor {
@@ -179,6 +188,39 @@ func (s *connectionSupervisor) reconnect() {
 	if err := s.session.Connect(); err != nil && !errors.Is(err, whatsmeow.ErrAlreadyConnected) {
 		s.log.Warnf("Reconnect failed: %v", err)
 	}
+}
+
+// holdLeft is how long the current pause (ban, second client) still runs; 0 when none.
+func (s *connectionSupervisor) holdLeft() time.Duration {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return max(s.holdUntil.Sub(s.now()), 0)
+}
+
+// forceReconnect drops and reopens the connection of the paired session, for the person who sees
+// "connected" but no new messages: reconnect() does nothing while the socket looks alive. It never
+// unpairs, and it refuses while WhatsApp asked to wait or right after a previous forced reconnect.
+func (s *connectionSupervisor) forceReconnect() (wait time.Duration, err error) {
+	if s.isStopped() || !s.session.IsPaired() {
+		return 0, errReconnectStopped
+	}
+	s.mu.Lock()
+	if left := s.holdUntil.Sub(s.now()); left > 0 {
+		s.mu.Unlock()
+		return left, errReconnectHeld
+	}
+	if left := forceReconnectCooldown - s.now().Sub(s.lastForced); left > 0 {
+		s.mu.Unlock()
+		return left, errReconnectCooldown
+	}
+	s.lastForced = s.now()
+	s.mu.Unlock()
+	s.log.Warnf("Reconnect requested from the status page")
+	s.session.Disconnect()
+	if err := s.session.Connect(); err != nil && !errors.Is(err, whatsmeow.ErrAlreadyConnected) {
+		return 0, err
+	}
+	return 0, nil
 }
 
 func (s *connectionSupervisor) watch(interval time.Duration) {
