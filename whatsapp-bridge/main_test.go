@@ -156,10 +156,9 @@ func doHandlerRequest(t *testing.T, handler http.HandlerFunc, method string, bod
 }
 
 // TestHandleReact covers /api/react request validation: method guard, decode
-// guard, required-field guard, and the group + from_me=false rejection that
-// prevents actionSenderJID from silently using the group JID as sender.
+// guard, required-field guard, and the rejection of an unknown group author.
 func TestHandleReact(t *testing.T) {
-	handler := handleReact(nil)
+	handler := handleReact(nil, nil)
 
 	t.Run("non-POST returns 405", func(t *testing.T) {
 		rec := doHandlerRequest(t, handler, http.MethodGet, nil)
@@ -183,7 +182,7 @@ func TestHandleReact(t *testing.T) {
 		}
 	})
 
-	t.Run("group chat with from_me=false returns 400", func(t *testing.T) {
+	t.Run("group chat with unknown sender returns 400", func(t *testing.T) {
 		body, _ := json.Marshal(ReactRequest{ChatJID: "123456@g.us", MessageID: "MSG1", Emoji: "👍", FromMe: false})
 		rec := doHandlerRequest(t, handler, http.MethodPost, body)
 		if rec.Code != http.StatusBadRequest {
@@ -238,7 +237,7 @@ func TestHandleEdit(t *testing.T) {
 }
 
 // TestHandleRevoke covers /api/revoke request validation: same shape as
-// TestHandleReact, including the group + from_me=false rejection.
+// TestHandleReact, including the rejection of an unknown group author.
 func TestHandleRevoke(t *testing.T) {
 	handler := handleRevoke(nil, nil)
 
@@ -264,7 +263,7 @@ func TestHandleRevoke(t *testing.T) {
 		}
 	})
 
-	t.Run("group chat with from_me=false returns 400", func(t *testing.T) {
+	t.Run("group chat with unknown sender returns 400", func(t *testing.T) {
 		body, _ := json.Marshal(RevokeRequest{ChatJID: "123456@g.us", MessageID: "MSG1", FromMe: false})
 		rec := doHandlerRequest(t, handler, http.MethodPost, body)
 		if rec.Code != http.StatusBadRequest {
