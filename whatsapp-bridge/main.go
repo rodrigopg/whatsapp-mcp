@@ -3190,8 +3190,8 @@ func handleHealthz(connected func() bool) http.HandlerFunc {
 }
 
 // Start a REST API server to expose the WhatsApp client functionality
-func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, port int) {
-	http.HandleFunc("/status", handleStatus(func() statusInfo {
+func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, supervisor *connectionSupervisor, port int) {
+	newPanel(os.Getenv("API_AUTH_TOKEN"), os.Getenv("MCP_PUBLIC_URL"), func() statusInfo {
 		qrState.RLock()
 		hasQR := qrState.png != nil
 		qrState.RUnlock()
@@ -3199,10 +3199,13 @@ func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, port 
 			HasQR: hasQR, Uptime: time.Since(startedAt).Round(time.Second).String()}
 		if client != nil && client.Store.ID != nil {
 			si.Account = maskAccount(client.Store.ID.User)
+			si.Paired = true
 		}
-		si.Messages, si.LastMsg = lastMessage(messageStore.db)
+		si.Messages, si.LastMsg, si.LastMsgAt = lastMessageAt(messageStore.db)
+		si.Pairing, si.LoggedOutAt = pairingNow(time.Now()), loggedOutAt()
+		si.Held, si.Stopped = supervisor.holdLeft(), supervisor.isStopped()
 		return si
-	}))
+	}, supervisor).register(http.DefaultServeMux)
 
 	http.HandleFunc("/healthz", handleHealthz(func() bool {
 		return client != nil && client.IsConnected() && client.IsLoggedIn()
@@ -3943,9 +3946,9 @@ img{border:8px solid white;border-radius:8px;box-shadow:0 4px 20px rgba(0,0,0,.2
 	}
 
 	handler := http.DefaultServeMux
-	var finalHandler http.Handler = handler
+	var finalHandler http.Handler = stampAPIAccess(handler)
 	if authToken != "" {
-		finalHandler = requireBearerToken(authToken, handler)
+		finalHandler = requireBearerToken(authToken, finalHandler)
 	}
 
 	// Run server in a goroutine so it doesn't block
@@ -4046,6 +4049,9 @@ func main() {
 		return err == nil && len(devices) == 0
 	}, func() error { return client.Store.Delete(context.Background()) })
 	client.AddEventHandlerWithSuccessStatus(failOnPanic(logger, func(evt any) bool {
+		if _, ok := evt.(*events.LoggedOut); ok {
+			markLoggedOut() // before the supervisor, which may exit right away
+		}
 		supervisor.handle(evt)
 		switch v := evt.(type) {
 		case *events.Message:
@@ -4053,6 +4059,7 @@ func main() {
 
 		case *events.HistorySync:
 			// Process history sync events
+			lastHistoryUnix.Store(time.Now().Unix())
 			handleHistorySync(client, messageStore, v, logger)
 
 		case *events.GroupInfo:
@@ -4093,7 +4100,7 @@ func main() {
 			bridgePort = 8080
 		}
 	}
-	startRESTServer(client, messageStore, bridgePort)
+	startRESTServer(client, messageStore, supervisor, bridgePort)
 
 	// Connect to WhatsApp
 	if client.Store.ID == nil {
@@ -4128,6 +4135,8 @@ func main() {
 					_ = exec.Command("open", qrFile).Start()
 				}
 			} else if evt.Event == "success" {
+				pairedAtUnix.Store(time.Now().Unix())
+				clearLoggedOut()
 				qrState.Lock()
 				qrState.png = nil
 				qrState.connected = true

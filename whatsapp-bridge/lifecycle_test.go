@@ -21,6 +21,7 @@ type fakeSession struct {
 }
 
 func (f *fakeSession) Connect() error    { f.connects++; f.connected = true; return nil }
+func (f *fakeSession) Disconnect()       { f.connected = false }
 func (f *fakeSession) IsConnected() bool { return f.connected }
 func (f *fakeSession) IsPaired() bool    { return f.paired }
 

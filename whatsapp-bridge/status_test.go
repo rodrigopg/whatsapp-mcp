@@ -12,20 +12,20 @@ import (
 func TestStatusPage(t *testing.T) {
 	get := func(s statusInfo) string {
 		w := httptest.NewRecorder()
-		handleStatus(func() statusInfo { return s })(w, httptest.NewRequest("GET", "/status", nil))
+		newPanel("tok", "", func() statusInfo { return s }, nil).page(w, httptest.NewRequest("GET", "/status", nil))
 		return w.Body.String()
 	}
-	if b := get(statusInfo{Connected: true, Account: maskAccount("5511900001234"), Messages: 3}); !strings.Contains(b, "Connected") || !strings.Contains(b, "•••1234") || strings.Contains(b, "55119") || strings.Contains(b, "/qr.png") {
+	if b := get(statusInfo{Connected: true, Account: maskAccount("5511900001234"), Messages: 3}); !strings.Contains(b, "Tudo certo") || !strings.Contains(b, "•••1234") || strings.Contains(b, "55119") || strings.Contains(b, "/qr.png") {
 		t.Errorf("connected page wrong: %s", b)
 	}
-	if b := get(statusInfo{HasQR: true}); !strings.Contains(b, "scan to pair") || !strings.Contains(b, "/qr.png") {
+	if b := get(statusInfo{HasQR: true}); !strings.Contains(b, "Escaneie para conectar") || !strings.Contains(b, "/qr.png") {
 		t.Errorf("qr page wrong: %s", b)
 	}
-	if b := get(statusInfo{}); !strings.Contains(b, "Waiting for a QR") {
+	if b := get(statusInfo{}); !strings.Contains(b, "Preparando o código QR") {
 		t.Errorf("idle page wrong: %s", b)
 	}
 	w := httptest.NewRecorder()
-	handleStatus(nil)(w, httptest.NewRequest("POST", "/status", nil))
+	newPanel("tok", "", nil, nil).page(w, httptest.NewRequest("POST", "/status", nil))
 	if w.Code != 405 {
 		t.Errorf("POST = %d, want 405", w.Code)
 	}
