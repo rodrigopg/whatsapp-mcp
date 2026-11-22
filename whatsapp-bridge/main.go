@@ -3207,7 +3207,7 @@ func handleHealthz(connected func() bool) http.HandlerFunc {
 
 // Start a REST API server to expose the WhatsApp client functionality
 func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, supervisor *connectionSupervisor, port int) {
-	newPanel(os.Getenv("API_AUTH_TOKEN"), os.Getenv("MCP_PUBLIC_URL"), func() statusInfo {
+	statusPanel := newPanel(os.Getenv("API_AUTH_TOKEN"), os.Getenv("MCP_PUBLIC_URL"), func() statusInfo {
 		qrState.RLock()
 		hasQR := qrState.png != nil
 		qrState.RUnlock()
@@ -3221,7 +3221,9 @@ func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, super
 		si.Pairing, si.LoggedOutAt = pairingNow(time.Now()), loggedOutAt()
 		si.Held, si.Stopped = supervisor.holdLeft(), supervisor.isStopped()
 		return si
-	}, supervisor).register(http.DefaultServeMux)
+	}, supervisor)
+	statusPanel.db = messageStore.db
+	statusPanel.register(http.DefaultServeMux)
 
 	http.HandleFunc("/healthz", handleHealthz(func() bool {
 		return client != nil && client.IsConnected() && client.IsLoggedIn()
