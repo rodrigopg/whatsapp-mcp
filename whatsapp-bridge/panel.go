@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"crypto/subtle"
 	"crypto/tls"
+	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -168,6 +169,7 @@ type panel struct {
 	info      func() statusInfo
 	sup       reconnecter
 	client    *http.Client
+	db        *sql.DB // messages.db, for /status/insights
 	now       func() time.Time
 
 	mu        sync.Mutex
@@ -184,6 +186,7 @@ func newPanel(token, publicURL string, info func() statusInfo, sup reconnecter) 
 
 func (p *panel) register(mux *http.ServeMux) {
 	mux.HandleFunc("/status", p.page)
+	mux.HandleFunc("/status/insights", p.insightsPage)
 	mux.HandleFunc("/status/login", p.login)
 	mux.HandleFunc("/status/logout", p.action(func(w http.ResponseWriter, r *http.Request) string {
 		http.SetCookie(w, &http.Cookie{Name: panelCookie, Path: "/status", MaxAge: -1})
@@ -387,38 +390,9 @@ func (p *panel) page(w http.ResponseWriter, r *http.Request) {
 var panelTmpl = template.Must(template.New("panel").Parse(`<!DOCTYPE html><html lang="pt-BR"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 {{if .Refresh}}<meta http-equiv="refresh" content="10">{{end}}<title>Seu WhatsApp</title>
-<style>
-:root{--bg:#f6f7f6;--card:#fff;--fg:#1a2421;--muted:#5f6d69;--line:#e0e6e3;--brand:#0d6b5f;--brand-ink:#fff;
---ok:#17803d;--ok-bg:#e6f4ea;--warn:#9a5b00;--warn-bg:#fdf2dc;--bad:#b42318;--bad-bg:#fdecea;--info:#245ea8;--info-bg:#e7effa}
-@media (prefers-color-scheme:dark){:root{color-scheme:dark;--bg:#101614;--card:#19211f;--fg:#e3eae7;--muted:#97a6a1;--line:#2b3633;--brand:#55c4b1;--brand-ink:#05201b;
---ok:#5fd28a;--ok-bg:#12291b;--warn:#f2b24c;--warn-bg:#2d220f;--bad:#ff8a7e;--bad-bg:#331614;--info:#86b4f0;--info-bg:#132238}}
-*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
-.p{max-width:1040px;margin:0 auto;padding:18px 16px 32px;display:grid;gap:14px}
-@media (min-width:860px){.p{grid-template-columns:minmax(0,1fr) minmax(0,1fr);align-items:start;gap:20px;padding:32px 40px 48px}.p>header,.p>footer{grid-column:1/-1}}
-header,footer{display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap}
-header b{font-size:1.1rem}footer{font-size:.8rem;color:var(--muted)}
-.acct{font:500 .78rem ui-monospace,monospace;color:var(--muted);border:1px solid var(--line);padding:3px 8px;border-radius:999px}
-.col{display:grid;gap:14px;min-width:0}
-.card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:16px;display:grid;gap:12px;min-width:0}
-h2{margin:0;font-size:1.05rem}p{margin:0}
-.banner{border-left:6px solid var(--tone);background:linear-gradient(90deg,var(--tone-bg),var(--card) 70%)}
-.pill{justify-self:start;font-weight:600;font-size:.72rem;letter-spacing:.06em;text-transform:uppercase;color:var(--tone);background:var(--tone-bg);border:1px solid var(--tone);padding:2px 9px;border-radius:999px}
-.t-ok{--tone:var(--ok);--tone-bg:var(--ok-bg)}.t-warn{--tone:var(--warn);--tone-bg:var(--warn-bg)}.t-bad{--tone:var(--bad);--tone-bg:var(--bad-bg)}.t-info{--tone:var(--info);--tone-bg:var(--info-bg)}
-.big{font-size:1.3rem;font-weight:600;line-height:1.25}.sub,.hint,.fine{color:var(--muted)}.sub{font-size:.92rem}.hint{font-size:.84rem}.fine{font-size:.78rem}
-dl{display:grid;grid-template-columns:auto 1fr;gap:6px 16px;margin:0;font-size:.9rem}dt{color:var(--muted)}dd{margin:0;text-align:right;font-variant-numeric:tabular-nums}
-button{font:600 .92rem inherit;font-family:inherit;border-radius:10px;padding:10px 14px;border:1px solid var(--line);background:var(--card);color:var(--fg);cursor:pointer}
-button.primary{background:var(--brand);color:var(--brand-ink);border-color:transparent}button.hl{background:var(--warn);color:var(--card);border-color:transparent}
-button.link{border:0;background:none;padding:0;color:var(--brand);text-decoration:underline;font-size:.82rem}
-button:focus-visible,input:focus-visible,summary:focus-visible{outline:2px solid var(--brand);outline-offset:2px}
-.row{display:flex;flex-wrap:wrap;gap:8px;align-items:center}.field{display:flex;gap:8px;min-width:0}
-input{flex:1;min-width:0;font:.85rem ui-monospace,monospace;padding:10px 12px;border-radius:10px;border:1px solid var(--line);background:var(--bg);color:var(--fg)}
-.qr{display:grid;justify-items:center;gap:10px}.qr img{width:220px;height:220px;max-width:100%;border:10px solid #fff;border-radius:8px;box-shadow:0 2px 14px rgba(0,0,0,.15)}
-ol{margin:0;padding-left:1.2rem;font-size:.9rem}summary{cursor:pointer;font-weight:600;font-size:.9rem}details{border-top:1px solid var(--line);padding-top:8px}
-.flash{border-radius:10px;padding:10px 12px;font-weight:600;font-size:.9rem;background:var(--ok-bg);color:var(--ok)}.flash.bad{background:var(--bad-bg);color:var(--bad)}
-.result{border-radius:10px;padding:12px;display:grid;gap:8px;font-size:.9rem}.result.ok{background:var(--ok-bg)}.result.bad{background:var(--bad-bg)}
-.result b{font-size:.98rem}.result.ok b{color:var(--ok)}.result.bad b{color:var(--bad)}
-</style></head><body><div class="p">
+<style>{{template "css"}}</style></head><body><div class="p">
 <header><b>Seu WhatsApp</b>{{if .Account}}<span class="acct">{{.Account}}</span>{{end}}</header>
+{{template "nav" "home"}}
 <div class="col">
 {{if .Flash}}<p class="flash{{if .FlashBad}} bad{{end}}" role="status">{{.Flash}}</p>{{end}}
 {{if eq .State "ok"}}<section class="card banner t-ok"><span class="pill">Conectado</span><p class="big">Tudo certo</p><p class="sub">Seu WhatsApp está ligado e guardando mensagens.</p>
@@ -467,4 +441,39 @@ ol{margin:0;padding-left:1.2rem;font-size:.9rem}summary{cursor:pointer;font-weig
 </div>
 <script>var c=document.getElementById("copy");if(c)c.onclick=function(){var i=document.getElementById("mcpurl"),ok=function(){c.textContent="Copiado"};
 (navigator.clipboard?navigator.clipboard.writeText(i.value):Promise.reject()).then(ok,function(){i.focus();i.select();try{document.execCommand("copy");ok()}catch(e){}})};</script>
-</body></html>`))
+</body></html>
+{{define "nav"}}<nav aria-label="Páginas"><a href="/status"{{if eq . "home"}} aria-current="page"{{end}}>Início</a><a href="/status/insights"{{if eq . "insights"}} aria-current="page"{{end}}>Insights</a></nav>{{end}}
+{{define "css"}}:root{--bg:#f6f7f6;--card:#fff;--fg:#1a2421;--muted:#5f6d69;--line:#e0e6e3;--brand:#0d6b5f;--brand-ink:#fff;
+--ok:#17803d;--ok-bg:#e6f4ea;--warn:#9a5b00;--warn-bg:#fdf2dc;--bad:#b42318;--bad-bg:#fdecea;--info:#245ea8;--info-bg:#e7effa}
+@media (prefers-color-scheme:dark){:root{color-scheme:dark;--bg:#101614;--card:#19211f;--fg:#e3eae7;--muted:#97a6a1;--line:#2b3633;--brand:#55c4b1;--brand-ink:#05201b;
+--ok:#5fd28a;--ok-bg:#12291b;--warn:#f2b24c;--warn-bg:#2d220f;--bad:#ff8a7e;--bad-bg:#331614;--info:#86b4f0;--info-bg:#132238}}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+.p{max-width:1040px;margin:0 auto;padding:18px 16px 32px;display:grid;gap:14px}
+@media (min-width:860px){.p{grid-template-columns:minmax(0,1fr) minmax(0,1fr);align-items:start;gap:20px;padding:32px 40px 48px}.p>header,.p>footer{grid-column:1/-1}}
+header,footer{display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap}
+header b{font-size:1.1rem}footer{font-size:.8rem;color:var(--muted)}
+.acct{font:500 .78rem ui-monospace,monospace;color:var(--muted);border:1px solid var(--line);padding:3px 8px;border-radius:999px}
+.col{display:grid;gap:14px;min-width:0}
+.card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:16px;display:grid;gap:12px;min-width:0}
+h2{margin:0;font-size:1.05rem}p{margin:0}
+.banner{border-left:6px solid var(--tone);background:linear-gradient(90deg,var(--tone-bg),var(--card) 70%)}
+.pill{justify-self:start;font-weight:600;font-size:.72rem;letter-spacing:.06em;text-transform:uppercase;color:var(--tone);background:var(--tone-bg);border:1px solid var(--tone);padding:2px 9px;border-radius:999px}
+.t-ok{--tone:var(--ok);--tone-bg:var(--ok-bg)}.t-warn{--tone:var(--warn);--tone-bg:var(--warn-bg)}.t-bad{--tone:var(--bad);--tone-bg:var(--bad-bg)}.t-info{--tone:var(--info);--tone-bg:var(--info-bg)}
+.big{font-size:1.3rem;font-weight:600;line-height:1.25}.sub,.hint,.fine{color:var(--muted)}.sub{font-size:.92rem}.hint{font-size:.84rem}.fine{font-size:.78rem}
+dl{display:grid;grid-template-columns:auto 1fr;gap:6px 16px;margin:0;font-size:.9rem}dt{color:var(--muted)}dd{margin:0;text-align:right;font-variant-numeric:tabular-nums}
+button{font:600 .92rem inherit;font-family:inherit;border-radius:10px;padding:10px 14px;border:1px solid var(--line);background:var(--card);color:var(--fg);cursor:pointer}
+button.primary{background:var(--brand);color:var(--brand-ink);border-color:transparent}button.hl{background:var(--warn);color:var(--card);border-color:transparent}
+button.link{border:0;background:none;padding:0;color:var(--brand);text-decoration:underline;font-size:.82rem}
+button:focus-visible,input:focus-visible,summary:focus-visible{outline:2px solid var(--brand);outline-offset:2px}
+.row{display:flex;flex-wrap:wrap;gap:8px;align-items:center}.field{display:flex;gap:8px;min-width:0}
+input{flex:1;min-width:0;font:.85rem ui-monospace,monospace;padding:10px 12px;border-radius:10px;border:1px solid var(--line);background:var(--bg);color:var(--fg)}
+.qr{display:grid;justify-items:center;gap:10px}.qr img{width:220px;height:220px;max-width:100%;border:10px solid #fff;border-radius:8px;box-shadow:0 2px 14px rgba(0,0,0,.15)}
+ol{margin:0;padding-left:1.2rem;font-size:.9rem}summary{cursor:pointer;font-weight:600;font-size:.9rem}details{border-top:1px solid var(--line);padding-top:8px}
+.flash{border-radius:10px;padding:10px 12px;font-weight:600;font-size:.9rem;background:var(--ok-bg);color:var(--ok)}.flash.bad{background:var(--bad-bg);color:var(--bad)}
+.result{border-radius:10px;padding:12px;display:grid;gap:8px;font-size:.9rem}.result.ok{background:var(--ok-bg)}.result.bad{background:var(--bad-bg)}
+.result b{font-size:.98rem}.result.ok b{color:var(--ok)}.result.bad b{color:var(--bad)}
+nav{display:flex;gap:4px;border-bottom:1px solid var(--line)}
+nav a{font-weight:600;font-size:.9rem;color:var(--muted);text-decoration:none;padding:8px 12px;border-bottom:3px solid transparent}
+nav a[aria-current]{color:var(--fg);border-bottom-color:var(--brand)}a:focus-visible{outline:2px solid var(--brand);outline-offset:2px}
+@media (min-width:860px){.p>nav,.p>.wide{grid-column:1/-1}}
+{{end}}`))
