@@ -386,7 +386,7 @@ Go WhatsApp Bridge (whatsapp-bridge/)
 | Tool | Description |
 |------|-------------|
 | `search_contacts` | Search contacts by name or phone number (LID-aware) |
-| `list_messages` | Retrieve messages with filters, pagination, context |
+| `list_messages` | Retrieve messages with filters, pagination, context, readable stickers, locations and contact cards; reactions appear with their target message; WhatsApp statuses are excluded |
 | `request_chat_history` | Ask the online phone for 1-50 messages before the oldest stored message (`count` defaults to 50); requires a nonempty chat. Results arrive asynchronously; check with `list_messages`. Wakes the phone; hidden by `MCP_READONLY`. REST: `POST /api/chat/backfill {"chat_jid":"...","count":50}` |
 | `list_chats` | List chats with metadata |
 | `suggest_favorites` | Suggest favorites from last month's two-way conversations; only proposes |
@@ -410,14 +410,14 @@ Go WhatsApp Bridge (whatsapp-bridge/)
 | `get_direct_chat_by_contact` | Find a direct chat by phone number (LID-aware) |
 | `get_contact_chats` | All chats involving a contact |
 | `get_last_interaction` | Most recent message with a contact |
-| `get_message_context` | Messages around a specific message |
+| `get_message_context` | Messages around a specific message, including locations, contact cards, stickers and reactions on each message |
 | `send_message` | Send a text message, optionally as a native reply quoting a stored text message and/or @-mentioning people |
 | `react_to_message` | Add or remove a reaction; for another group member's message, its author must be stored in the bridge's local history |
 | `delete_message` | Delete a message for everyone; another group member's message requires a stored author and group admin permission |
 | `send_file` | Send image, video, document, or audio file |
 | `send_audio_message` | Send audio as a WhatsApp voice message |
 | `send_voice_message` | Convert text to speech and send it as a voice message, with an optional `notice` text sent just before it (opt-in, see [Voice messages from text](#voice-messages-from-text-opt-in)) |
-| `download_media` | Download media from a message, get local path |
+| `download_media` | Download image, video, audio, document or sticker media from a message, get local path |
 | `create_group` | Create a new WhatsApp group |
 | `leave_group` | Leave a group |
 | `update_group_participants` | Add/remove/promote/demote group members |

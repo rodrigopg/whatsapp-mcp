@@ -1,7 +1,7 @@
 import logging
 import unicodedata
 from datetime import datetime
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Optional, List, Tuple, Dict, Any
 import os
 import requests
@@ -117,6 +117,7 @@ class Message:
     id: str
     chat_name: Optional[str] = None
     media_type: Optional[str] = None
+    reactions: List[dict] = field(default_factory=list)
 
 @dataclass
 class Chat:
@@ -155,6 +156,7 @@ def _message_from_dict(d: dict) -> Message:
         chat_jid=d.get("chat_jid"),
         id=d.get("id"),
         media_type=d.get("media_type"),
+        reactions=d.get("reactions") or [],
     )
 
 
@@ -198,6 +200,9 @@ def format_message(message: Message, show_chat_info: bool = True) -> None:
     try:
         sender_name = get_sender_name(message.sender) if not message.is_from_me else "Me"
         output += f"From: {sender_name}: {content_prefix}{message.content}\n"
+        if message.reactions:
+            reactions = ", ".join(f"{r['emoji']} ({get_sender_name(r['sender'])})" for r in message.reactions)
+            output += f"Reactions: {reactions}\n"
     except BridgeError:
         raise
     except Exception as e:
