@@ -571,6 +571,7 @@ func reviewNext(db *sql.DB, req ReviewNextRequest, selfUsers []string, now time.
 		where += ` AND substr(m.chat_jid, 1, instr(m.chat_jid, '@') - 1) != ?`
 		args = append(args, u)
 	}
+	// #nosec G202 -- the WHERE fragments are constants; values are bound
 	rows, err := db.Query(`SELECT m.id, m.chat_jid, c.name, m.sender, substr(m.content, 1, 2000), m.is_from_me, m.timestamp, m.media_type
 		FROM messages m JOIN chats c ON c.jid = m.chat_jid WHERE `+where+` ORDER BY julianday(m.timestamp), m.rowid LIMIT ?`, append(args, limit)...)
 	if err != nil {

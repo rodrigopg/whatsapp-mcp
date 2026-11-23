@@ -126,9 +126,11 @@ func (st *settingsStore) update(change func(*settings)) error {
 		return err
 	}
 	tmp := st.path + ".tmp"
+	// #nosec G703 -- the settings path is fixed at startup, never request input
 	if err := os.WriteFile(tmp, data, 0o600); err != nil {
 		return err
 	}
+	// #nosec G703 -- same fixed settings path
 	if err := os.Rename(tmp, st.path); err != nil {
 		return err
 	}
@@ -274,6 +276,7 @@ func (p *panel) registerSettings(mux *http.ServeMux) {
 		if flash != "saved" {
 			return flash
 		}
+		// #nosec G124 -- clears the cookie
 		http.SetCookie(w, &http.Cookie{Name: panelCookie, Path: "/status", MaxAge: -1})
 		return ""
 	}))
