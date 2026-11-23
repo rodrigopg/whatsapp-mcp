@@ -304,7 +304,7 @@ func TestStampAPIAccess(t *testing.T) {
 		t.Error("/status counted as API access")
 	}
 	// Behind the bearer check: a refused request must not count.
-	guarded := requireBearerToken("tok", h)
+	guarded := apiGuard("tok", apiHosts(""), h)
 	guarded.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("GET", "/api/chats", nil))
 	if lastAPIUnix.Load() != 0 {
 		t.Error("unauthorized request counted as API access")

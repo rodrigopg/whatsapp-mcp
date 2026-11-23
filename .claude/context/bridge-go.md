@@ -9,8 +9,15 @@ Bridge Go (`whatsapp-bridge/main.go`) — conecta ao WhatsApp via whatsmeow, exp
 - **Porta** via `WHATSAPP_BRIDGE_PORT` (default 8080; este setup usa 8081).
 - **`API_AUTH_TOKEN`**: se `BIND_ADDR` não é `127.0.0.1`/`localhost`, o processo **recusa subir**
   sem essa env var setada (fail-closed, não fail-open). Quando setada, todo `/api/*` exige
-  header `Authorization: Bearer <token>` (middleware `requireBearerToken`, aplicado só em
+  header `Authorization: Bearer <token>` (middleware `apiGuard` em `api_guard.go`, aplicado só em
   `/api/*` — `/qr` e `/qr.png` ficam sempre abertos, é o próprio fluxo de pareamento).
+- **`apiGuard` is the single gate of `/api/*`** (wraps the mux in `startRESTServer`; never add a
+  per-handler check instead). Token set: constant-time bearer compare -> 401, nothing else (a
+  page cannot send the header; a Host rule there would only break `BIND_ADDR=0.0.0.0` reached by
+  LAN address, DNS name or another container). No token (bind is loopback): `Host` name must be
+  loopback or in `API_ALLOWED_HOSTS` (port ignored on purpose: a container may publish another
+  one) -> 403; any `Origin`, or `Sec-Fetch-Site` other than `none`/`same-origin` -> 403. The panel (`/status*`) is outside it and keeps its own
+  cookie + same-origin + loopback-Host checks. Tests: `api_guard_test.go`.
 
 ## Endpoints REST de leitura (`/api/chats`, `/api/messages`, etc.)
 
@@ -48,6 +55,8 @@ Bridge Go (`whatsapp-bridge/main.go`) — conecta ao WhatsApp via whatsmeow, exp
 ## Mídia + segurança
 
 - **`safeMediaPath`** (main.go ~889): rejeita componentes crus com `/`, `\`, `..`, `.`, vazio (não sanitiza — surface o ataque). IDs reais do WhatsApp são hex/base64 sem separadores.
+- **`readOutboundMedia`** (`media_path.go`) is the only way `sendWhatsAppMessage` reads `media_path`. After `EvalSymlinks`: inside `store/` (matched by `os.SameFile`, so case-insensitive filesystems cannot dodge it) only `store/<jid>/<file>` passes, always; else `MEDIA_ALLOWED_ROOTS` (path list) when set; else no hidden (`.`-prefixed) component; regular file; <= `maxMediaBytes` (100 MB). The default install lives in `~/.whatsapp-mcp`, which is why the store rule runs before the hidden rule. The native e2e launcher sets `MEDIA_ALLOWED_ROOTS` for its `.media` folder.
+- **Permissions**: `store/` and chat folders 0700, files 0600; `tightenStore()` fixes older installs at startup. The pairing QR image is `store/whatsapp-qr.png` (`qrImagePath`), removed on pairing.
 - Path de mídia prefixado com message ID: filename derivado do sync-time colidia (571 áudios → 87 paths únicos), cache devolvia bytes errados.
 - **Media retry** (recuperação de mídia expirada): `SendMediaRetryReceipt` → `events.MediaRetry` → `DecryptMediaRetryNotification` → `DownloadMediaWithPath`. History sync NÃO recupera (re-entrega as mesmas URLs mortas do CDN). Endpoint `/api/mediaretry`. Log contract estável: `MEDIA RETRY <id>: SUCCESS|NOTONPHONE|ERROR`.
 

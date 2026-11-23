@@ -21,6 +21,7 @@ start() {
   # the whole list and $! would be the wrapper, which stop would kill while the bridge lived on).
   # The subshell's stdout/stderr are detached too, or a caller capturing our output never sees EOF.
   ( cd ".data/$1" && BIND_ADDR=127.0.0.1 WHATSAPP_BRIDGE_PORT="$(port "$1")" API_AUTH_TOKEN="$E2E_TOKEN" \
+      MEDIA_ALLOWED_ROOTS="$HERE/.media" \
       exec "$BIN" >> "$HERE/.run/$1.log" 2>&1 < /dev/null ) > /dev/null 2>&1 &
   echo $! > "$(pidf "$1")"
 }

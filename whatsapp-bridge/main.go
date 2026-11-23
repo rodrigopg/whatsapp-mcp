@@ -69,7 +69,7 @@ type MessageStore struct {
 // Initialize message store
 func NewMessageStore() (*MessageStore, error) {
 	// Create directory for database if it doesn't exist
-	if err := os.MkdirAll("store", 0755); err != nil {
+	if err := os.MkdirAll("store", 0o700); err != nil {
 		return nil, fmt.Errorf("failed to create store directory: %v", err)
 	}
 
@@ -445,7 +445,7 @@ func sendWhatsAppMessage(client *whatsmeow.Client, messageStore *MessageStore, r
 	// Check if we have media to send
 	if mediaPath != "" {
 		// Read media file
-		mediaData, err := os.ReadFile(mediaPath)
+		mediaData, err := readOutboundMedia(mediaPath)
 		if err != nil {
 			return false, fmt.Sprintf("Error reading media file: %v", err)
 		}
@@ -2053,7 +2053,7 @@ func downloadMedia(client *whatsmeow.Client, messageStore *MessageStore, message
 	}
 
 	// Create directory for the chat if it doesn't exist
-	if err := os.MkdirAll(chatDir, 0755); err != nil {
+	if err := os.MkdirAll(chatDir, 0o700); err != nil {
 		return false, "", "", "", fmt.Errorf("failed to create chat directory: %v", err)
 	}
 
@@ -2120,7 +2120,7 @@ func downloadMedia(client *whatsmeow.Client, messageStore *MessageStore, message
 	}
 
 	// Save the downloaded media to file
-	if err := os.WriteFile(localPath, mediaData, 0644); err != nil {
+	if err := os.WriteFile(localPath, mediaData, 0o600); err != nil {
 		return false, "", "", "", fmt.Errorf("failed to save media file: %v", err)
 	}
 
@@ -3945,7 +3945,7 @@ img{border:8px solid white;border-radius:8px;box-shadow:0 4px 20px rgba(0,0,0,.2
 		json.NewEncoder(w).Encode(SearchContactsResponse{Success: true, Message: msg, Contacts: hits})
 	})
 
-	// Bind to loopback only — no auth on REST API, anyone on LAN could send messages.
+	// Bind to loopback only by default.
 	// Set BIND_ADDR=0.0.0.0 (or a specific interface IP, e.g. a Tailscale address) to opt into wider exposure.
 	bindAddr := os.Getenv("BIND_ADDR")
 	if bindAddr == "" {
@@ -3965,9 +3965,7 @@ img{border:8px solid white;border-radius:8px;box-shadow:0 4px 20px rgba(0,0,0,.2
 
 	handler := http.DefaultServeMux
 	var finalHandler http.Handler = stampAPIAccess(readOnlyGuard(appSettings, handler))
-	if authToken != "" {
-		finalHandler = requireBearerToken(authToken, finalHandler)
-	}
+	finalHandler = apiGuard(authToken, apiHosts(os.Getenv("API_ALLOWED_HOSTS")), finalHandler)
 
 	// Run server in a goroutine so it doesn't block
 	go func() {
@@ -3975,24 +3973,6 @@ img{border:8px solid white;border-radius:8px;box-shadow:0 4px 20px rgba(0,0,0,.2
 			fmt.Printf("REST API server error: %v\n", err)
 		}
 	}()
-}
-
-// requireBearerToken wraps a handler so every /api/* request must present
-// "Authorization: Bearer <token>". /qr and /qr.png stay open since that's
-// the initial pairing flow, not an authenticated API call.
-func requireBearerToken(token string, next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !strings.HasPrefix(r.URL.Path, "/api/") {
-			next.ServeHTTP(w, r)
-			return
-		}
-		expected := "Bearer " + token
-		if got := r.Header.Get("Authorization"); got != expected {
-			http.Error(w, "Unauthorized", http.StatusUnauthorized)
-			return
-		}
-		next.ServeHTTP(w, r)
-	})
 }
 
 func main() {
@@ -4004,10 +3984,11 @@ func main() {
 	dbLog := waLog.Stdout("Database", "INFO", true)
 
 	// Create directory for database if it doesn't exist
-	if err := os.MkdirAll("store", 0755); err != nil {
+	if err := os.MkdirAll("store", 0o700); err != nil {
 		logger.Errorf("Failed to create store directory: %v", err)
 		os.Exit(1)
 	}
+	tightenStore()
 	var err error
 	if appSettings, err = loadSettings(settingsPath); err != nil {
 		fmt.Printf("FATAL: cannot read the panel settings (%v). Fix or remove the file; refusing to start without them.\n", err)
@@ -4149,15 +4130,15 @@ func main() {
 					qrState.png = pngBytes
 					qrState.connected = false
 					qrState.Unlock()
-				}
 
-				// Also save to disk for convenience.
-				qrFile := "/tmp/whatsapp-qr.png"
-				if err := goqr.WriteFile(evt.Code, goqr.Medium, 512, qrFile); err == nil {
-					fmt.Printf("\nQR also saved as image: %s\n", qrFile)
-					_ = exec.Command("open", qrFile).Start()
+					// Also save to disk for convenience: inside store/, readable by this user only.
+					if qrFile, err := filepath.Abs(qrImagePath); err == nil && os.WriteFile(qrFile, pngBytes, 0o600) == nil {
+						fmt.Printf("\nQR also saved as image: %s\n", qrFile)
+						_ = exec.Command("open", qrFile).Start()
+					}
 				}
 			} else if evt.Event == "success" {
+				os.Remove(qrImagePath)
 				pairedAtUnix.Store(time.Now().Unix())
 				clearLoggedOut()
 				qrState.Lock()
@@ -4567,7 +4548,7 @@ func startTranscriptionSweep(interval time.Duration) {
 			}
 			// The lockfile is the only overlap guard; if we can't write it,
 			// don't leave a process running unguarded — kill it and retry next tick.
-			if err := os.WriteFile(lockPath, []byte(fmt.Sprintf("%d", cmd.Process.Pid)), 0644); err != nil {
+			if err := os.WriteFile(lockPath, []byte(fmt.Sprintf("%d", cmd.Process.Pid)), 0o600); err != nil {
 				fmt.Printf("transcription sweep: cannot write lockfile (%v); killing sweep to preserve overlap guard\n", err)
 				_ = cmd.Process.Kill()
 				_ = cmd.Wait()
@@ -4752,7 +4733,7 @@ func handleMediaRetry(client *whatsmeow.Client, messageStore *MessageStore, evt 
 	}
 
 	chatDir := fmt.Sprintf("store/%s", strings.ReplaceAll(entry.chatJID, ":", "_"))
-	if err := os.MkdirAll(chatDir, 0755); err != nil {
+	if err := os.MkdirAll(chatDir, 0o700); err != nil {
 		fmt.Printf("MEDIA RETRY %s: ERROR mkdir failed: %v\n", evt.MessageID, err)
 		return
 	}
@@ -4761,7 +4742,7 @@ func handleMediaRetry(client *whatsmeow.Client, messageStore *MessageStore, evt 
 		fmt.Printf("MEDIA RETRY %s: ERROR %v\n", evt.MessageID, err)
 		return
 	}
-	if err := os.WriteFile(localPath, data, 0644); err != nil {
+	if err := os.WriteFile(localPath, data, 0o600); err != nil {
 		fmt.Printf("MEDIA RETRY %s: ERROR write failed: %v\n", evt.MessageID, err)
 		return
 	}

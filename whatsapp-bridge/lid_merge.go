@@ -207,7 +207,7 @@ func moveChatMedia(db *sql.DB, lid, pn string) error {
 	} else if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(to, 0755); err != nil {
+	if err := os.MkdirAll(to, 0o700); err != nil {
 		return err
 	}
 	var kept int

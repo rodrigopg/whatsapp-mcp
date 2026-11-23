@@ -909,7 +909,7 @@ func TestHealthz(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", handleHealthz(func() bool { return true }))
 	mux.HandleFunc("/api/chats", func(w http.ResponseWriter, r *http.Request) {})
-	h := requireBearerToken("tok", mux)
+	h := apiGuard("tok", apiHosts(""), mux)
 	for path, want := range map[string]int{"/healthz": 200, "/api/chats": 401} {
 		rec := httptest.NewRecorder()
 		h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
