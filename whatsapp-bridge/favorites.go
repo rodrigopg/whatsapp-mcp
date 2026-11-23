@@ -100,7 +100,7 @@ func suggestFavorites(db *sql.DB, req SuggestFavoritesRequest, selfUsers []strin
 func listFavorites(db *sql.DB) ([]APIFavorite, error) {
 	rows, err := db.Query(`SELECT f.chat_jid, f.source, c.name, s.full_name, s.push_name FROM favorites f
 		LEFT JOIN chats c ON c.jid = f.chat_jid LEFT JOIN senders s ON s.jid = f.chat_jid
-		WHERE f.status = 'favorite' ORDER BY f.decided_at, f.chat_jid`)
+		WHERE f.status = 'favorite' ORDER BY julianday(f.decided_at), f.chat_jid`)
 	if err != nil {
 		return nil, err
 	}

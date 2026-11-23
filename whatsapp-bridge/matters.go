@@ -460,7 +460,7 @@ func reopenMatter(db *sql.DB, req ReopenMatterRequest, now time.Time) (APIMatter
 	}
 	var last time.Time
 	err = db.QueryRow(`SELECT messages.timestamp FROM matter_events e JOIN messages ON messages.id = e.message_id AND messages.chat_jid = ?
-		WHERE e.matter_id = ? ORDER BY julianday(messages.timestamp) DESC LIMIT 1`, m.ChatJID, m.ID).Scan(&last)
+		WHERE e.matter_id = ? ORDER BY julianday(messages.timestamp) DESC, messages.rowid DESC LIMIT 1`, m.ChatJID, m.ID).Scan(&last)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return APIMatter{}, err
 	}

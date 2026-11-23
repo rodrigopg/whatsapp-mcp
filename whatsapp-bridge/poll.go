@@ -198,7 +198,7 @@ func getPollVotes(db *sql.DB, chatJID, pollID string) (*PollVotesResponse, error
 	for _, o := range resp.Options {
 		resp.Tally[o] = 0
 	}
-	rows, err := db.Query(`SELECT voter, selected, timestamp FROM poll_votes WHERE poll_id = ? AND chat_jid = ? ORDER BY timestamp`, pollID, chatJID)
+	rows, err := db.Query(`SELECT voter, selected, timestamp FROM poll_votes WHERE poll_id = ? AND chat_jid = ? ORDER BY julianday(timestamp), rowid`, pollID, chatJID)
 	if err != nil {
 		return nil, err
 	}
