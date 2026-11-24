@@ -288,3 +288,34 @@ func TestReadLIDMergeTime(t *testing.T) {
 		t.Fatalf("merged chats = %v, %v", chats, err)
 	}
 }
+
+// A timestamp julianday() cannot parse has no instant: it sorts after every dated
+// row and no time window can claim it, instead of landing at a random text position.
+func TestReadUnparseableTimestamp(t *testing.T) {
+	s := setupChatStore(t)
+	chat := "111@s.whatsapp.net"
+	if err := s.StoreChat(chat, "Test", ts("2026-10-01T09:00:00Z")); err != nil {
+		t.Fatal(err)
+	}
+	readMessage(t, s.db, chat, "dated", "111", "2026-10-01T08:00:00Z", false)
+	if _, err := s.db.Exec(`INSERT INTO messages (id, chat_jid, sender, content, timestamp, is_from_me, media_type, filename)
+		VALUES ('broken', ?, '111', 'broken', 'not a time', 0, '', '')`, chat); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name string
+		req  MessagesRequest
+		want []string
+	}{
+		{"all", MessagesRequest{ChatJID: &chat}, []string{"dated", "broken"}},
+		{"after", MessagesRequest{ChatJID: &chat, After: strp("2026-01-01T00:00:00Z")}, []string{"dated"}},
+		{"before", MessagesRequest{ChatJID: &chat, Before: strp("2027-01-01T00:00:00Z")}, []string{"dated"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := listMessages(s.db, tc.req)
+			if err != nil || !reflect.DeepEqual(readIDs(got.Messages), tc.want) {
+				t.Fatalf("messages = %v, %v; want %v", readIDs(got.Messages), err, tc.want)
+			}
+		})
+	}
+}
