@@ -84,6 +84,7 @@ func loadInsights(db *sql.DB, days int, now time.Time) (insights, error) {
 		in.Daily = append(in.Daily, c)
 	}
 
+	// #nosec G202 -- the WHERE fragment is a constant; values are bound
 	top, err := db.Query(`SELECT m.chat_jid, COALESCE(c.name, ''), COUNT(*)`+strings.Replace(where, "FROM messages", "FROM messages m LEFT JOIN chats c ON c.jid = m.chat_jid", 1)+
 		` GROUP BY m.chat_jid ORDER BY 3 DESC, m.chat_jid LIMIT 5`, cut)
 	if err != nil {

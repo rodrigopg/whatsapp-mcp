@@ -292,6 +292,8 @@ def send_file(recipient: str, media_path: str) -> Dict[str, Any]:
         recipient: The recipient - either a phone number with country code but no + or other symbols,
                  or a JID (e.g., "123456789@s.whatsapp.net" or a group JID like "123456789@g.us")
         media_path: The absolute path to the media file to send (image, video, document)
+            By default the bridge sends only files in the Downloads folder, the temp folder, or media
+            it downloaded (download_media); other folders need MEDIA_ALLOWED_ROOTS on the bridge.
     
     Returns:
         A dictionary containing success status and a status message
@@ -312,6 +314,8 @@ def send_audio_message(recipient: str, media_path: str) -> Dict[str, Any]:
         recipient: The recipient - either a phone number with country code but no + or other symbols,
                  or a JID (e.g., "123456789@s.whatsapp.net" or a group JID like "123456789@g.us")
         media_path: The absolute path to the audio file to send (will be converted to Opus .ogg if it's not a .ogg file)
+            By default the bridge sends only files in the Downloads folder, the temp folder, or media
+            it downloaded (download_media); other folders need MEDIA_ALLOWED_ROOTS on the bridge.
     
     Returns:
         A dictionary containing success status and a status message
