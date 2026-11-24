@@ -25,7 +25,9 @@ import requests
 from transcribe import (DB_PATH, API_BASE, transcribe, write_content,
                         engine_ready, SENTINEL_EMPTY, _bridge_auth_headers)
 
-BRIDGE_LOG = os.environ.get("WHATSAPP_BRIDGE_LOG", "/tmp/wa-bridge.log")
+# Default: where install.sh points the bridge's output (<install dir>/bridge.log).
+BRIDGE_LOG = os.environ.get("WHATSAPP_BRIDGE_LOG") or os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "..", "bridge.log")
 SENTINEL_NOT_ON_PHONE = "[áudio indisponível: não está mais no telefone]"
 
 # These must stay in sync with the stable log contract emitted by
