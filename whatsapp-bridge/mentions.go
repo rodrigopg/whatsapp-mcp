@@ -41,16 +41,34 @@ func mentionedJIDs(m *waProto.Message) []string {
 	return nil
 }
 
+// maxStoredMentions bounds what one message can write: far above any real group, and a mention
+// list is whatever its sender put in it.
+const maxStoredMentions = 2048
+
 // storeMentions records the user part of each mentioned JID (a device suffix
-// like "999:5" is dropped), once per message.
+// like "999:5" is dropped), once per message, in one transaction.
 func storeMentions(db *sql.DB, chat, messageID string, jids []string) error {
+	seen := make(map[string]bool)
 	for _, jid := range jids {
 		user, _, _ := strings.Cut(jidUser(jid), ":")
-		if _, err := db.Exec(`INSERT OR IGNORE INTO message_mentions (chat_jid, message_id, mentioned_user) VALUES (?, ?, ?)`, chat, messageID, user); err != nil {
+		if seen[user] = true; len(seen) == maxStoredMentions {
+			break
+		}
+	}
+	if len(seen) == 0 {
+		return nil
+	}
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	for user := range seen {
+		if _, err := tx.Exec(`INSERT OR IGNORE INTO message_mentions (chat_jid, message_id, mentioned_user) VALUES (?, ?, ?)`, chat, messageID, user); err != nil {
 			return err
 		}
 	}
-	return nil
+	return tx.Commit()
 }
 
 var mentionToken = regexp.MustCompile(`@([0-9]+)\b`)

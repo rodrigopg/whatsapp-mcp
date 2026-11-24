@@ -344,7 +344,7 @@ func TestReviewNextAndMark(t *testing.T) {
 	if again, _ := reviewNext(db, ReviewNextRequest{}, []string{"999"}, matterNow); len(again.Messages) != 4 {
 		t.Errorf("reviewNext moved the cursor by itself: %d messages", len(again.Messages))
 	}
-	if _, err := reviewMark(db, ReviewMarkRequest{UpTo: next.NextCursor}); err != nil {
+	if _, err := reviewMark(db, ReviewMarkRequest{UpTo: next.NextCursor}, matterNow); err != nil {
 		t.Fatal(err)
 	}
 	after, _ := reviewNext(db, ReviewNextRequest{}, []string{"999"}, matterNow)
@@ -352,7 +352,7 @@ func TestReviewNextAndMark(t *testing.T) {
 		t.Errorf("after mark: %d messages, want 0", len(after.Messages))
 	}
 	// The cursor never goes back.
-	if cur, _ := reviewMark(db, ReviewMarkRequest{UpTo: "2026-09-20T00:00:00-03:00"}); cur != next.NextCursor {
+	if cur, _ := reviewMark(db, ReviewMarkRequest{UpTo: "2026-09-20T00:00:00-03:00"}, matterNow); cur != next.NextCursor {
 		t.Errorf("cursor went back to %s", cur)
 	}
 }
@@ -363,7 +363,7 @@ func TestReviewNextLimit(t *testing.T) {
 	if err != nil || len(page.Messages) != 2 || page.Messages[1].ID != "m2" {
 		t.Fatalf("page 1 = %+v, %v", page, err)
 	}
-	if _, err := reviewMark(db, ReviewMarkRequest{UpTo: page.NextCursor}); err != nil {
+	if _, err := reviewMark(db, ReviewMarkRequest{UpTo: page.NextCursor}, matterNow); err != nil {
 		t.Fatal(err)
 	}
 	rest, _ := reviewNext(db, ReviewNextRequest{Limit: 2}, []string{"999"}, matterNow)

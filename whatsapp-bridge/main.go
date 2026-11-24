@@ -318,7 +318,11 @@ func (store *MessageStore) StoreMessage(id, chatJID, sender, content string, tim
 	// zero-length BLOB, so the NULLIF guard would silently no-op and always
 	// take the incoming (possibly empty) value. Verified empirically before
 	// writing this. Use length(...) instead, which works for BLOB.
-	_, err := store.db.Exec(
+	//
+	// The WHERE keeps the update to the row's own author (same rule as ApplyEdit): message IDs
+	// are chosen by whoever sends, so a message reusing a stored ID must not replace what someone
+	// else wrote. An unknown author on either side still refreshes the row.
+	res, err := store.db.Exec(
 		`INSERT INTO messages
 		(id, chat_jid, sender, content, timestamp, is_from_me, media_type, filename, url, media_key, file_sha256, file_enc_sha256, file_length)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -333,9 +337,17 @@ func (store *MessageStore) StoreMessage(id, chatJID, sender, content string, tim
 			media_key       = CASE WHEN length(excluded.media_key)       > 0 THEN excluded.media_key       ELSE messages.media_key       END,
 			file_sha256     = CASE WHEN length(excluded.file_sha256)     > 0 THEN excluded.file_sha256     ELSE messages.file_sha256     END,
 			file_enc_sha256 = CASE WHEN length(excluded.file_enc_sha256) > 0 THEN excluded.file_enc_sha256 ELSE messages.file_enc_sha256 END,
-			file_length     = excluded.file_length`,
+			file_length     = excluded.file_length
+		WHERE messages.is_from_me = excluded.is_from_me
+			AND (excluded.is_from_me = 1 OR messages.sender = '' OR excluded.sender = '' OR messages.sender IN (excluded.sender, ?))`,
 		id, chatJID, sender, content, timestamp, isFromMe, mediaType, filename, url, mediaKey, fileSHA256, fileEncSHA256, fileLength,
+		strings.TrimSuffix(sender, "@"+types.HiddenUserServer), // rows stored before senderKey hold a LID author as the bare user
 	)
+	if err == nil {
+		if n, _ := res.RowsAffected(); n == 0 {
+			fmt.Printf("StoreMessage: kept the stored message %q in %q, the incoming one has another author\n", id, chatJID)
+		}
+	}
 	return err
 }
 

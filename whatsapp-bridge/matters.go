@@ -532,11 +532,17 @@ func listMatters(db *sql.DB, req ListMattersRequest) ([]APIMatter, error) {
 	return out, nil
 }
 
-func reviewCursor(db *sql.DB) (*time.Time, error) {
+// reviewCursor reads the cursor. One stored after now (older versions accepted any instant) is
+// rewritten to now, once, so it stops hiding the messages that arrive from here on.
+func reviewCursor(db *sql.DB, now time.Time) (*time.Time, error) {
 	var c sql.NullTime
 	err := db.QueryRow(`SELECT reviewed_up_to FROM review_cursor WHERE id = 1`).Scan(&c)
 	if errors.Is(err, sql.ErrNoRows) || !c.Valid {
 		return nil, nil
+	}
+	if err == nil && c.Time.After(now) {
+		c.Time = now
+		_, err = db.Exec(`UPDATE review_cursor SET reviewed_up_to = ? WHERE id = 1`, now)
 	}
 	return &c.Time, err
 }
@@ -551,7 +557,7 @@ func reviewNext(db *sql.DB, req ReviewNextRequest, selfUsers []string, now time.
 		limit = 100
 	}
 	since := now.AddDate(0, -1, 0)
-	cursor, err := reviewCursor(db)
+	cursor, err := reviewCursor(db, now)
 	if err != nil {
 		return ReviewNextResponse{}, err
 	}
@@ -609,13 +615,17 @@ func reviewNext(db *sql.DB, req ReviewNextRequest, selfUsers []string, now time.
 	return resp, nil
 }
 
-// reviewMark advances the cursor to upTo; it never goes back. Returns the cursor.
-func reviewMark(db *sql.DB, req ReviewMarkRequest) (string, error) {
+// reviewMark advances the cursor to upTo; it never goes back and never passes now (a later instant
+// would mark messages nobody has received yet as reviewed). Returns the cursor.
+func reviewMark(db *sql.DB, req ReviewMarkRequest, now time.Time) (string, error) {
 	up, err := time.Parse(time.RFC3339, req.UpTo)
 	if err != nil {
 		return "", invalid("up_to must be an ISO-8601 instant with offset")
 	}
-	cur, err := reviewCursor(db)
+	if up.After(now) {
+		up = now
+	}
+	cur, err := reviewCursor(db, now)
 	if err != nil {
 		return "", err
 	}
@@ -704,7 +714,7 @@ func registerMatterRoutes(db *sql.DB, client *whatsmeow.Client) {
 		return reviewNext(db, r, ownUsers(client), time.Now())
 	}))
 	http.HandleFunc("/api/review/mark", matterRoute(func(r ReviewMarkRequest) (map[string]string, error) {
-		c, err := reviewMark(db, r)
+		c, err := reviewMark(db, r, time.Now())
 		return map[string]string{"cursor": c}, err
 	}))
 }
