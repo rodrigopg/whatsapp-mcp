@@ -1,0 +1,58 @@
+name: Security
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  schedule:
+    # New advisories land without any change here.
+    - cron: "17 9 * * 1"
+
+permissions:
+  contents: read
+
+jobs:
+  go:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version-file: whatsapp-bridge/go.mod
+      - name: govulncheck (known vulnerabilities the code actually reaches)
+        working-directory: whatsapp-bridge
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.10.0 ./...
+      - name: gosec
+        working-directory: whatsapp-bridge
+        # Not enforced:
+        #   G104 unchecked errors: a code-quality rule, dozens of hits, none a vulnerability by itself.
+        #   G114 server without timeouts: not enforced yet.
+        #   G304 file path from a variable: this program reads files by path by design, and CodeQL
+        #        follows the data flow instead of flagging every call.
+        #   media_path.go G122/G302: the walk that tightens the bridge's own 0700 store.
+        # A single false positive gets "// #nosec <rule> -- <reason>" on the line above it.
+        run: >
+          go run github.com/securego/gosec/v2/cmd/gosec@v2.30.0
+          -exclude=G104,G114,G304
+          -exclude-rules='media_path\.go:G122,G302'
+          ./...
+
+  python:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
+      - name: pip-audit (the locked dependencies)
+        working-directory: whatsapp-mcp-server
+        run: |
+          uv export --locked --no-emit-project --format requirements-txt -o "$RUNNER_TEMP/requirements.txt"
+          uvx pip-audit==2.10.1 -r "$RUNNER_TEMP/requirements.txt" --require-hashes --disable-pip
+      - name: bandit
+        working-directory: whatsapp-mcp-server
+        # Not enforced: B404 (importing subprocess), B603 (any subprocess call, even with an argument
+        # list and no shell) and B607 (ffmpeg and whisper are found on PATH by design). shell=True,
+        # eval, pickle, weak hashes, disabled TLS checks and the rest stay on.
+        # A single false positive gets "# nosec <rule>" with the reason on that line.
+        run: uvx bandit==1.9.4 -r . -x './test_*.py,./.venv' -s B404,B603,B607

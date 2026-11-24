@@ -123,11 +123,13 @@ func diagnoseConnector(ctx context.Context, client *http.Client, publicURL strin
 	}
 	ctx, cancel := context.WithTimeout(ctx, diagnoseTimeout)
 	defer cancel()
+	// #nosec G704 -- the URL is the operator-set MCP_PUBLIC_URL, never request input
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, publicURL+"/.well-known/oauth-protected-resource/mcp", nil)
 	if err != nil {
 		res.Detail = "O endereço público do conector é inválido."
 		return res
 	}
+	// #nosec G704 -- same operator-set URL
 	resp, err := client.Do(req)
 	res.Took = fmt.Sprintf("%.1f s", time.Since(start).Seconds())
 	var dnsErr *net.DNSError
@@ -195,6 +197,7 @@ func (p *panel) register(mux *http.ServeMux) {
 	p.registerSettings(mux)
 	mux.HandleFunc("/status/login", p.login)
 	mux.HandleFunc("/status/logout", p.action(func(w http.ResponseWriter, r *http.Request) string {
+		// #nosec G124 -- clears the cookie
 		http.SetCookie(w, &http.Cookie{Name: panelCookie, Path: "/status", MaxAge: -1})
 		return ""
 	}))
@@ -245,6 +248,7 @@ func (p *panel) cookieValue() string {
 }
 
 func (p *panel) setCookie(w http.ResponseWriter, r *http.Request) {
+	// #nosec G124 -- Secure is set whenever the request came over HTTPS; the panel also serves plain loopback
 	http.SetCookie(w, &http.Cookie{Name: panelCookie, Value: p.cookieValue(), Path: "/status",
 		MaxAge: int(panelCookieTTL.Seconds()), HttpOnly: true, SameSite: http.SameSiteStrictMode,
 		Secure: r.TLS != nil || r.Header.Get("X-Forwarded-Proto") == "https"})

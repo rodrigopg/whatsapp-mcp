@@ -2605,6 +2605,7 @@ func listActiveChats(db *sql.DB, req ActiveChatsRequest, selfUsers []string, toP
 		params = append(params, t.UTC().Format("2006-01-02 15:04:05.000"))
 	}
 
+	// #nosec G202 -- the WHERE fragments are constants; values are bound
 	rows, err := db.Query(`
 		SELECT messages.chat_jid, messages.timestamp, substr(messages.content, 1, ?), messages.media_type,
 		       chats.name, senders.full_name, senders.push_name
@@ -3165,6 +3166,7 @@ func getDirectChatByContact(db *sql.DB, req ChatByContactRequest) (ChatResponse,
 		params[i] = jid
 	}
 
+	// #nosec G201 -- only "?" placeholders are formatted in; values are bound
 	query := fmt.Sprintf(`
 		SELECT c.jid, c.name, c.last_message_time,
 		       m.content, m.sender, m.is_from_me
@@ -4197,6 +4199,7 @@ func main() {
 					// Also save to disk for convenience: inside store/, readable by this user only.
 					if qrFile, err := filepath.Abs(qrImagePath); err == nil && os.WriteFile(qrFile, pngBytes, 0o600) == nil {
 						fmt.Printf("\nQR also saved as image: %s\n", qrFile)
+						// #nosec G204 -- opens the QR image the bridge itself just wrote
 						_ = exec.Command("open", qrFile).Start()
 					}
 				}
@@ -4435,6 +4438,7 @@ func handleHistorySync(client *whatsmeow.Client, messageStore *MessageStore, his
 					own = *client.Store.ID
 				}
 				sender := senderKey(client, historySender(jid, own, msg.Message))
+				// #nosec G115 -- a message timestamp in seconds fits int64
 				timestamp := time.Unix(int64(msg.Message.GetMessageTimestamp()), 0)
 				if reaction := inner.GetReactionMessage(); reaction != nil {
 					if err := messageStore.StoreReaction(chatJID, reaction.GetKey().GetID(), sender, reaction.GetText(), reaction.GetSenderTimestampMS(), timestamp); err != nil {
@@ -4584,6 +4588,7 @@ func startTranscriptionSweep(interval time.Duration) {
 			if set.TranscribeOff {
 				continue // switched off in the panel
 			}
+			// #nosec G204 -- fixed interpreter and script paths under the install folder
 			cmd := exec.Command(python, script)
 			cmd.Dir = pyDir
 			// Surface the transcriber's output (its DONE summary, per-audio
@@ -4961,6 +4966,7 @@ func placeholderWaveform(duration uint32) []byte {
 		val += (baseAmplitude / 2) * math.Sin(pos*math.Pi*frequencyFactor*16)
 
 		// Add some randomness to make it look more natural
+		// #nosec G404 -- cosmetic jitter for the voice-note waveform
 		val += (rand.Float64() - 0.5) * 15
 
 		// Add some fade-in and fade-out effects

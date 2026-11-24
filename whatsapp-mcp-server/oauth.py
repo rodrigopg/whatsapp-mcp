@@ -134,7 +134,7 @@ class OwnerOAuth:
             for tok, kind, ttl in ((access, "access", ACCESS_TTL), (refresh, "refresh", REFRESH_TTL)):
                 self._db.execute("INSERT INTO tokens (hash, kind, client_id, scopes, expires_at) VALUES (?, ?, ?, ?, ?)",
                                  (_hash(tok), kind, client_id, json.dumps(scopes), now + ttl))
-        return OAuthToken(access_token=access, token_type="bearer", expires_in=ACCESS_TTL, scope=" ".join(scopes), refresh_token=refresh)
+        return OAuthToken(access_token=access, token_type="bearer", expires_in=ACCESS_TTL, scope=" ".join(scopes), refresh_token=refresh)  # nosec B106 -- the OAuth token type, not a secret
 
     def _load(self, token: str, kind: str):
         with self._lock:
