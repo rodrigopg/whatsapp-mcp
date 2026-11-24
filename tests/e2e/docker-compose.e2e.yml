@@ -5,6 +5,7 @@ x-bridge: &bridge
   restart: unless-stopped
   environment:
     API_AUTH_TOKEN: ${E2E_TOKEN:?run tests/e2e/run.sh once to generate tests/e2e/.env}
+    MEDIA_ALLOWED_ROOTS: /media
 
 services:
   a:
