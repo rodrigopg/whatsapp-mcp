@@ -137,10 +137,14 @@ func NewMessageStore() (*MessageStore, error) {
 		CREATE INDEX IF NOT EXISTS idx_messages_time ON messages(julianday(timestamp));
 		CREATE INDEX IF NOT EXISTS idx_messages_sender_time ON messages(sender, julianday(timestamp));
 		CREATE INDEX IF NOT EXISTS idx_chats_time ON chats(julianday(last_message_time) DESC, jid);
-	` + pollSchema + matterSchema + favoritesSchema + summarySchema + draftsSchema + mentionsSchema + lidMediaSchema)
+	` + pollSchema + matterSchema + favoritesSchema + summarySchema + draftsSchema + mentionsSchema + lidMediaSchema + reactionsSchema)
 	if err != nil {
 		db.Close()
 		return nil, fmt.Errorf("failed to create tables: %v", err)
+	}
+	if err := removeStatusBroadcast(db); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("failed to remove status broadcast: %v", err)
 	}
 
 	_, err = db.Exec(`UPDATE messages SET sender = ''
@@ -172,6 +176,9 @@ func (store *MessageStore) TouchChatLastMessageTime(jid string, lastMessageTime 
 // EnsureChat creates a chat row if none exists, leaving any existing row untouched.
 // Required before StoreMessage in the outbound path to satisfy the FOREIGN KEY constraint.
 func (store *MessageStore) EnsureChat(jid string, lastMessageTime time.Time) error {
+	if jid == "status@broadcast" {
+		return nil
+	}
 	_, err := store.db.Exec(
 		"INSERT OR IGNORE INTO chats (jid, name, last_message_time) VALUES (?, '', ?)",
 		jid, lastMessageTime,
@@ -260,6 +267,9 @@ func SyncAllContacts(client *whatsmeow.Client, store *MessageStore, logger waLog
 
 // Store a chat in the database
 func (store *MessageStore) StoreChat(jid, name string, lastMessageTime time.Time) error {
+	if jid == "status@broadcast" {
+		return nil
+	}
 	_, err := store.db.Exec(
 		`INSERT INTO chats (jid, name, last_message_time) VALUES (?, ?, ?)
 		ON CONFLICT(jid) DO UPDATE SET
@@ -277,7 +287,7 @@ func (store *MessageStore) StoreChat(jid, name string, lastMessageTime time.Time
 func (store *MessageStore) StoreMessage(id, chatJID, sender, content string, timestamp time.Time, isFromMe bool,
 	mediaType, filename, url string, mediaKey, fileSHA256, fileEncSHA256 []byte, fileLength uint64) error {
 	// Only store if there's actual content or media
-	if content == "" && mediaType == "" {
+	if chatJID == "status@broadcast" || (content == "" && mediaType == "") {
 		return nil
 	}
 
@@ -399,6 +409,23 @@ func extractTextContent(msg *waProto.Message) string {
 		return video.GetCaption()
 	} else if doc := msg.GetDocumentMessage(); doc != nil {
 		return doc.GetCaption()
+	} else if msg.GetStickerMessage() != nil {
+		return "[sticker]"
+	} else if loc := msg.GetLocationMessage(); loc != nil {
+		return locationText(loc.GetDegreesLatitude(), loc.GetDegreesLongitude(), loc.GetIsLive(), strings.TrimSpace(loc.GetName()+" "+loc.GetAddress()))
+	} else if loc := msg.GetLiveLocationMessage(); loc != nil {
+		return locationText(loc.GetDegreesLatitude(), loc.GetDegreesLongitude(), true, loc.GetCaption())
+	} else if contact := msg.GetContactMessage(); contact != nil {
+		return contactText(contact)
+	} else if contacts := msg.GetContactsArrayMessage(); contacts != nil {
+		var cards []string
+		for _, contact := range contacts.GetContacts() {
+			cards = append(cards, contactText(contact))
+		}
+		if len(cards) == 0 {
+			return "[contacts]"
+		}
+		return strings.Join(cards, "; ")
 	}
 
 	return ""
@@ -638,6 +665,13 @@ func extractMediaInfo(msg *waProto.Message) (mediaType string, filename string, 
 	if msg == nil {
 		return "", "", "", nil, nil, nil, 0
 	}
+	if sticker := msg.GetStickerMessage(); sticker != nil {
+		url := sticker.GetURL()
+		if url == "" && sticker.GetDirectPath() != "" {
+			url = "https://mmg.whatsapp.net" + sticker.GetDirectPath()
+		}
+		return "sticker", "sticker.webp", url, sticker.GetMediaKey(), sticker.GetFileSHA256(), sticker.GetFileEncSHA256(), sticker.GetFileLength()
+	}
 
 	// Check for image message
 	if img := msg.GetImageMessage(); img != nil {
@@ -818,6 +852,9 @@ func (store *MessageStore) ApplyEdit(id, chatJID, content string, fromMe bool, s
 // SynchronousAck the server then gets no ack and redelivers the message after a reconnect, and the
 // decrypted event buffer lets the redelivery through the Signal ratchet a second time.
 func handleMessage(client *whatsmeow.Client, messageStore *MessageStore, msg *events.Message, logger waLog.Logger) bool {
+	if msg.Info.Chat == types.StatusBroadcastJID {
+		return true
+	}
 	if msg.Message.GetProtocolMessage() != nil {
 		if id, content, ok := protocolAction(msg.Message); ok {
 			chat := resolveToPN(client, msg.Info.Chat).String()
@@ -844,6 +881,13 @@ func handleMessage(client *whatsmeow.Client, messageStore *MessageStore, msg *ev
 	}
 	if err := messageStore.StoreSender(senderJID, msg.Info.PushName, fullName, firstName, businessName); err != nil {
 		logger.Warnf("Failed to store sender: %v", err)
+	}
+	if reaction := msg.Message.GetReactionMessage(); reaction != nil {
+		if err := messageStore.StoreReaction(chatJID, reaction.GetKey().GetID(), sender, reaction.GetText(), reaction.GetSenderTimestampMS(), msg.Info.Timestamp); err != nil {
+			logger.Warnf("Failed to store reaction: %v", err)
+			return false
+		}
+		return true
 	}
 
 	if msg.Message.GetPollUpdateMessage() != nil {
@@ -1068,6 +1112,13 @@ func handleReact(client messageActionClient, messageStore *MessageStore) http.Ha
 			w.WriteHeader(http.StatusInternalServerError)
 			json.NewEncoder(w).Encode(MarkChatResponse{Success: false, Message: fmt.Sprintf("SendMessage error: %v", err)})
 			return
+		}
+		// WhatsApp does not echo a reaction back to the device that sent it.
+		if own := client.OwnID(); messageStore != nil && own != nil {
+			chat := client.NormalizeChat(chatJID).String()
+			if err := messageStore.StoreReaction(chat, req.MessageID, own.User, req.Emoji, builtMsg.GetReactionMessage().GetSenderTimestampMS(), time.Now()); err != nil {
+				ownActionLogger.Warnf("Failed to store own reaction: %v", err)
+			}
 		}
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(MarkChatResponse{Success: true, Message: fmt.Sprintf("Reaction sent to message %s", req.MessageID)})
@@ -2097,7 +2148,7 @@ func downloadMedia(client *whatsmeow.Client, messageStore *MessageStore, message
 	// Create a downloader that implements DownloadableMessage
 	var waMediaType whatsmeow.MediaType
 	switch mediaType {
-	case "image":
+	case "image", "sticker":
 		waMediaType = whatsmeow.MediaImage
 	case "video":
 		waMediaType = whatsmeow.MediaVideo
@@ -2193,14 +2244,15 @@ func stripAccents(s string) string {
 // APIMessage is the wire shape for a message row (Message is already taken by
 // the whatsmeow event struct above).
 type APIMessage struct {
-	Timestamp time.Time `json:"timestamp"`
-	Sender    string    `json:"sender"`
-	ChatName  *string   `json:"chat_name"`
-	Content   string    `json:"content"`
-	IsFromMe  bool      `json:"is_from_me"`
-	ChatJID   string    `json:"chat_jid"`
-	ID        string    `json:"id"`
-	MediaType *string   `json:"media_type"`
+	Timestamp time.Time     `json:"timestamp"`
+	Sender    string        `json:"sender"`
+	ChatName  *string       `json:"chat_name"`
+	Content   string        `json:"content"`
+	IsFromMe  bool          `json:"is_from_me"`
+	ChatJID   string        `json:"chat_jid"`
+	ID        string        `json:"id"`
+	MediaType *string       `json:"media_type"`
+	Reactions []APIReaction `json:"reactions,omitempty"`
 }
 
 // APIChat is the wire shape for a chat row.
@@ -2748,7 +2800,13 @@ func listMessages(db *sql.DB, req MessagesRequest) (MessagesResponse, error) {
 		}
 		messages = append(messages, msg)
 	}
-	return MessagesResponse{Messages: messages}, rows.Err()
+	if err := rows.Err(); err != nil {
+		return MessagesResponse{}, err
+	}
+	if err := loadReactions(db, messages); err != nil {
+		return MessagesResponse{}, err
+	}
+	return MessagesResponse{Messages: messages}, nil
 }
 
 // ---- /api/message_context ----
@@ -2853,7 +2911,12 @@ func getMessageContext(db *sql.DB, req MessageContextRequest) (MessageContextRes
 		return MessageContextResponse{}, false, err
 	}
 
-	return MessageContextResponse{Message: target, Before: beforeMessages, After: afterMessages}, true, nil
+	all := append([]APIMessage{target}, beforeMessages...)
+	all = append(all, afterMessages...)
+	if err := loadReactions(db, all); err != nil {
+		return MessageContextResponse{}, false, err
+	}
+	return MessageContextResponse{Message: all[0], Before: all[1 : 1+len(beforeMessages)], After: all[1+len(beforeMessages):]}, true, nil
 }
 
 // ---- /api/contacts/search ----
@@ -4353,6 +4416,9 @@ func handleHistorySync(client *whatsmeow.Client, messageStore *MessageStore, his
 		}
 
 		chatJID := *conversation.ID
+		if chatJID == "status@broadcast" {
+			continue
+		}
 
 		// Try to parse the JID
 		jid, err := types.ParseJID(chatJID)
@@ -4386,6 +4452,19 @@ func handleHistorySync(client *whatsmeow.Client, messageStore *MessageStore, his
 				// from the same shape, or wrapped messages look empty and are
 				// skipped below.
 				inner := unwrapHistoryMessage(msg.Message.Message)
+				var own types.JID
+				if client != nil && client.Store != nil && client.Store.ID != nil {
+					own = *client.Store.ID
+				}
+				sender := senderKey(client, historySender(jid, own, msg.Message))
+				// #nosec G115 -- a message timestamp in seconds fits int64
+				timestamp := time.Unix(int64(msg.Message.GetMessageTimestamp()), 0)
+				if reaction := inner.GetReactionMessage(); reaction != nil {
+					if err := messageStore.StoreReaction(chatJID, reaction.GetKey().GetID(), sender, reaction.GetText(), reaction.GetSenderTimestampMS(), timestamp); err != nil {
+						logger.Warnf("Failed to store history reaction: %v", err)
+					}
+					continue
+				}
 
 				// Extract text content (includes media captions)
 				content := extractTextContent(inner)
@@ -4407,18 +4486,11 @@ func handleHistorySync(client *whatsmeow.Client, messageStore *MessageStore, his
 					continue
 				}
 
-				var own types.JID
-				if client != nil && client.Store != nil && client.Store.ID != nil {
-					own = *client.Store.ID
-				}
-				sender := senderKey(client, historySender(jid, own, msg.Message))
 				if sender == "" {
 					logger.Warnf("History message %s has unknown sender", msg.Message.GetKey().GetID())
 				}
 				isFromMe := msg.Message.GetKey().GetFromMe()
 				msgID := msg.Message.GetKey().GetID()
-				// #nosec G115 -- a message timestamp in seconds fits int64
-				timestamp := time.Unix(int64(msg.Message.GetMessageTimestamp()), 0)
 
 				if !chatEnsured {
 					if err := messageStore.EnsureChat(chatJID, time.Time{}); err != nil {
@@ -4449,6 +4521,12 @@ func handleHistorySync(client *whatsmeow.Client, messageStore *MessageStore, his
 						latestTimestamp = timestamp
 					}
 					syncedCount++
+					for _, reaction := range msg.Message.GetReactions() {
+						author := senderKey(client, historySender(jid, own, &waProto.WebMessageInfo{Key: reaction.GetKey()}))
+						if err := messageStore.StoreReaction(chatJID, msgID, author, reaction.GetText(), reaction.GetSenderTimestampMS(), timestamp); err != nil {
+							logger.Warnf("Failed to store history reaction: %v", err)
+						}
+					}
 					if jids := mentionedJIDs(inner); len(jids) > 0 {
 						_ = storeMentions(messageStore.db, chatJID, msgID, jids)
 					}
@@ -4734,7 +4812,7 @@ func handleMediaRetry(client *whatsmeow.Client, messageStore *MessageStore, evt 
 
 	var waMediaType whatsmeow.MediaType
 	switch entry.mediaType {
-	case "image":
+	case "image", "sticker":
 		waMediaType = whatsmeow.MediaImage
 	case "video":
 		waMediaType = whatsmeow.MediaVideo

@@ -54,7 +54,8 @@ func migrateLIDChats(client *whatsmeow.Client, store *MessageStore, logger waLog
 	if client == nil || store == nil || store.db == nil {
 		return
 	}
-	lidChats, err := queryStrings(store.db, "SELECT jid FROM chats WHERE jid LIKE '%@"+types.HiddenUserServer+"'")
+	lidChats, err := queryStrings(store.db, `SELECT jid FROM chats WHERE jid LIKE '%@lid'
+		UNION SELECT chat_jid FROM reactions WHERE chat_jid LIKE '%@lid'`)
 	if err != nil {
 		logger.Warnf("LID migration: failed to list LID chats: %v", err)
 		return
@@ -163,6 +164,11 @@ func mergeLIDChat(db *sql.DB, lid, pn string) error {
 				AND julianday(l.timestamp) > julianday(p.timestamp))`,
 		`UPDATE OR IGNORE poll_votes SET chat_jid = ?2 WHERE chat_jid = ?1`,
 		`DELETE FROM poll_votes WHERE chat_jid = ?1`,
+		`DELETE FROM reactions AS p WHERE chat_jid = ?2 AND EXISTS (SELECT 1 FROM reactions l
+				WHERE l.chat_jid = ?1 AND l.message_id = p.message_id AND l.sender = p.sender
+				AND julianday(l.timestamp) > julianday(p.timestamp))`,
+		`UPDATE OR IGNORE reactions SET chat_jid = ?2 WHERE chat_jid = ?1`,
+		`DELETE FROM reactions WHERE chat_jid = ?1`,
 		`UPDATE OR IGNORE favorites SET chat_jid = ?2 WHERE chat_jid = ?1`, // a decision on the number wins
 		`DELETE FROM favorites WHERE chat_jid = ?1`,
 		`UPDATE matters SET chat_jid = ?2 WHERE chat_jid = ?1`,
@@ -248,7 +254,8 @@ func migrateLIDSenders(client *whatsmeow.Client, db *sql.DB) (int, error) {
 	}
 	lidLike := `LIKE '%@` + types.HiddenUserServer + `'`
 	senders, err := queryStrings(db, `SELECT sender FROM messages WHERE sender != '' AND (sender `+lidLike+` OR sender NOT LIKE '%@%')
-		UNION SELECT voter FROM poll_votes WHERE voter != '' AND (voter `+lidLike+` OR voter NOT LIKE '%@%')`)
+		UNION SELECT voter FROM poll_votes WHERE voter != '' AND (voter `+lidLike+` OR voter NOT LIKE '%@%')
+		UNION SELECT sender FROM reactions WHERE sender `+lidLike)
 	if err != nil {
 		return 0, err
 	}
@@ -341,6 +348,10 @@ func rewriteLIDAuthor(db *sql.DB, from, to string) error {
 			WHERE n.poll_id = o.poll_id AND n.chat_jid = o.chat_jid AND n.voter = ?2
 			AND julianday(n.timestamp) >= julianday(o.timestamp))`,
 		`UPDATE OR REPLACE poll_votes SET voter = ?2 WHERE voter = ?1`,
+		`DELETE FROM reactions AS o WHERE sender = ?1 AND EXISTS (SELECT 1 FROM reactions n
+			WHERE n.message_id = o.message_id AND n.chat_jid = o.chat_jid AND n.sender = ?2
+			AND julianday(n.timestamp) >= julianday(o.timestamp))`,
+		`UPDATE OR REPLACE reactions SET sender = ?2 WHERE sender = ?1`,
 	} {
 		if _, err := tx.Exec(q, from, to); err != nil {
 			return err
