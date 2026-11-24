@@ -39,6 +39,9 @@ func TestMessageTypesLiveAndHistory(t *testing.T) {
 		{"legacy live location", "[live location] 1,2", "", &waProto.Message{LocationMessage: &waProto.LocationMessage{
 			DegreesLatitude: proto.Float64(1), DegreesLongitude: proto.Float64(2), IsLive: proto.Bool(true),
 		}}},
+		{"near-zero location", "[location] 0.00001,-0.000002", "", &waProto.Message{LocationMessage: &waProto.LocationMessage{
+			DegreesLatitude: proto.Float64(0.00001), DegreesLongitude: proto.Float64(-0.000002),
+		}}},
 		{"contact", "[contact] Alice +12025550123", "", &waProto.Message{ContactMessage: &waProto.ContactMessage{
 			DisplayName: proto.String("Alice"), Vcard: proto.String("BEGIN:VCARD\r\nVERSION:3.0\r\nFN:Alice\r\nTEL;type=CELL;waid=12025550123:+12025550123\r\nEND:VCARD"),
 		}}},

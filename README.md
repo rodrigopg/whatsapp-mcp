@@ -386,7 +386,7 @@ Go WhatsApp Bridge (whatsapp-bridge/)
 | Tool | Description |
 |------|-------------|
 | `search_contacts` | Search contacts by name or phone number (LID-aware) |
-| `list_messages` | Retrieve messages with filters, pagination, context, readable stickers, locations and contact cards; reactions appear with their target message; WhatsApp statuses are excluded |
+| `list_messages` | Retrieve messages with filters, pagination, context, readable stickers, locations and contact cards; reactions appear with their target message; WhatsApp statuses are excluded (statuses stored by older versions are deleted at bridge startup) |
 | `request_chat_history` | Ask the online phone for 1-50 messages before the oldest stored message (`count` defaults to 50); requires a nonempty chat. Results arrive asynchronously; check with `list_messages`. Wakes the phone; hidden by `MCP_READONLY`. REST: `POST /api/chat/backfill {"chat_jid":"...","count":50}` |
 | `list_chats` | List chats with metadata |
 | `suggest_favorites` | Suggest favorites from last month's two-way conversations; only proposes |

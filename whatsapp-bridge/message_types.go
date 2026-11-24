@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 
 	waProto "go.mau.fi/whatsmeow/binary/proto"
@@ -12,7 +13,9 @@ func locationText(latitude, longitude float64, live bool, label string) string {
 	if live {
 		kind = "live location"
 	}
-	return strings.TrimSpace(fmt.Sprintf("[%s] %g,%g %s", kind, latitude, longitude, label))
+	// Plain decimals: %g switches to exponent form for coordinates near zero (1e-05).
+	coord := func(v float64) string { return strconv.FormatFloat(v, 'f', -1, 64) }
+	return strings.TrimSpace(fmt.Sprintf("[%s] %s,%s %s", kind, coord(latitude), coord(longitude), label))
 }
 
 func contactText(contact *waProto.ContactMessage) string {
