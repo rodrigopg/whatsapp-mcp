@@ -52,6 +52,7 @@ func loadReactions(db *sql.DB, messages []APIMessage) error {
 		for _, message := range part {
 			args = append(args, message.ChatJID, message.ID)
 		}
+		// #nosec G202 -- only "?" placeholders are concatenated; every value is bound
 		rows, err := db.Query(`SELECT chat_jid, message_id, sender, emoji, timestamp FROM reactions
 			WHERE emoji != '' AND (chat_jid, message_id) IN (VALUES (?, ?)`+strings.Repeat(", (?, ?)", len(part)-1)+`) ORDER BY sender`, args...)
 		if err != nil {
