@@ -47,7 +47,7 @@ def log(msg):
 def unavailable_audios(conn, limit):
     sql = ("SELECT id, chat_jid FROM messages "
            "WHERE media_type='audio' AND content LIKE '[áudio indisponível%' "
-           "ORDER BY timestamp DESC")
+           "ORDER BY julianday(timestamp) DESC, rowid DESC")
     if limit:
         sql += f" LIMIT {int(limit)}"
     return conn.execute(sql).fetchall()

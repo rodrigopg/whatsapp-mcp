@@ -61,12 +61,12 @@ def rows(db, since, chat):
          "WHERE is_from_me = 1 AND media_type = 'audio' AND COALESCE(content, '') != '' ")
     args = []
     if since:
-        q += "AND timestamp >= ? "
+        q += "AND julianday(timestamp) >= julianday(?) "
         args.append(since)
     if chat:
         q += "AND chat_jid = ? "
         args.append(chat)
-    return con.execute(q + "ORDER BY timestamp DESC", args).fetchall()
+    return con.execute(q + "ORDER BY julianday(timestamp) DESC, rowid DESC", args).fetchall()
 
 
 def main():
