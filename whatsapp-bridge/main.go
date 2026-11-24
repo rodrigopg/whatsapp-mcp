@@ -131,6 +131,12 @@ func NewMessageStore() (*MessageStore, error) {
 		-- answer for a few thousand.
 		CREATE INDEX IF NOT EXISTS idx_messages_audio_pending ON messages(chat_jid)
 			WHERE media_type = 'audio' AND (content IS NULL OR content = '');
+		-- Reads compare and order time through julianday(): timestamps are stored with
+		-- different offsets (+03:00 and Z), so text order is not time order.
+		CREATE INDEX IF NOT EXISTS idx_messages_chat_jtime ON messages(chat_jid, julianday(timestamp));
+		CREATE INDEX IF NOT EXISTS idx_messages_time ON messages(julianday(timestamp));
+		CREATE INDEX IF NOT EXISTS idx_messages_sender_time ON messages(sender, julianday(timestamp));
+		CREATE INDEX IF NOT EXISTS idx_chats_time ON chats(julianday(last_message_time) DESC, jid);
 	` + pollSchema + matterSchema + favoritesSchema + summarySchema + draftsSchema + mentionsSchema + lidMediaSchema)
 	if err != nil {
 		db.Close()
@@ -326,7 +332,7 @@ func (store *MessageStore) StoreMessage(id, chatJID, sender, content string, tim
 // Get messages from a chat
 func (store *MessageStore) GetMessages(chatJID string, limit int) ([]Message, error) {
 	rows, err := store.db.Query(
-		"SELECT sender, content, timestamp, is_from_me, media_type, filename FROM messages WHERE chat_jid = ? ORDER BY timestamp DESC LIMIT ?",
+		"SELECT sender, content, timestamp, is_from_me, media_type, filename FROM messages WHERE chat_jid = ? ORDER BY julianday(timestamp) DESC, rowid DESC LIMIT ?",
 		chatJID, limit,
 	)
 	if err != nil {
@@ -351,7 +357,7 @@ func (store *MessageStore) GetMessages(chatJID string, limit int) ([]Message, er
 
 // Get all chats
 func (store *MessageStore) GetChats() (map[string]time.Time, error) {
-	rows, err := store.db.Query("SELECT jid, last_message_time FROM chats ORDER BY last_message_time DESC")
+	rows, err := store.db.Query("SELECT jid, last_message_time FROM chats ORDER BY julianday(last_message_time) DESC, jid")
 	if err != nil {
 		return nil, err
 	}
@@ -2445,8 +2451,10 @@ func listChats(db *sql.DB, req ChatsRequest) (ChatsResponse, error) {
 	queryParts := []string{selectClause}
 	if includeLastMessage {
 		queryParts = append(queryParts, `
-			LEFT JOIN messages ON chats.jid = messages.chat_jid
-			AND chats.last_message_time = messages.timestamp
+			LEFT JOIN messages ON messages.rowid = (
+				SELECT rowid FROM messages WHERE chat_jid = chats.jid
+				ORDER BY julianday(timestamp) DESC, rowid DESC LIMIT 1
+			)
 		`)
 	}
 
@@ -2460,9 +2468,9 @@ func listChats(db *sql.DB, req ChatsRequest) (ChatsResponse, error) {
 		queryParts = append(queryParts, "WHERE "+strings.Join(whereClauses, " AND "))
 	}
 
-	orderBy := "chats.name"
+	orderBy := "chats.name, chats.jid"
 	if req.SortBy != "name" {
-		orderBy = "chats.last_message_time DESC"
+		orderBy = "julianday(chats.last_message_time) DESC, chats.jid"
 	}
 	queryParts = append(queryParts, "ORDER BY "+orderBy)
 
@@ -2687,7 +2695,7 @@ func listMessages(db *sql.DB, req MessagesRequest) (MessagesResponse, error) {
 		if err != nil {
 			return MessagesResponse{}, &errInvalidRequest{msg: fmt.Sprintf("invalid date format for 'after': %s", *req.After)}
 		}
-		whereClauses = append(whereClauses, "messages.timestamp > ?")
+		whereClauses = append(whereClauses, "julianday(messages.timestamp) > julianday(?)")
 		params = append(params, t)
 	}
 	if req.Before != nil && *req.Before != "" {
@@ -2695,18 +2703,18 @@ func listMessages(db *sql.DB, req MessagesRequest) (MessagesResponse, error) {
 		if err != nil {
 			return MessagesResponse{}, &errInvalidRequest{msg: fmt.Sprintf("invalid date format for 'before': %s", *req.Before)}
 		}
-		whereClauses = append(whereClauses, "messages.timestamp < ?")
+		whereClauses = append(whereClauses, "julianday(messages.timestamp) < julianday(?)")
 		params = append(params, t)
 	}
 	if req.SenderPhoneNumber != nil && *req.SenderPhoneNumber != "" {
 		jids := resolvePhoneToJIDs(*req.SenderPhoneNumber)
-		placeholders := make([]string, len(jids))
-		for i, jid := range jids {
-			placeholders[i] = "?"
-			params = append(params, jid)
+		placeholders := make([]string, 0, 2*len(jids))
+		for _, jid := range jids {
+			placeholders = append(placeholders, "?", "?")
+			params = append(params, jid, jidUser(jid))
 		}
 		whereClauses = append(whereClauses, fmt.Sprintf(
-			"(messages.chat_jid IN (%s) AND messages.chat_jid NOT LIKE '%%@g.us')",
+			"messages.sender IN (%s)",
 			strings.Join(placeholders, ","),
 		))
 	}
@@ -2723,7 +2731,7 @@ func listMessages(db *sql.DB, req MessagesRequest) (MessagesResponse, error) {
 	}
 
 	offset := req.Page * limit
-	queryParts = append(queryParts, "ORDER BY messages.timestamp DESC", "LIMIT ? OFFSET ?")
+	queryParts = append(queryParts, "ORDER BY julianday(messages.timestamp) DESC, messages.rowid DESC", "LIMIT ? OFFSET ?")
 	params = append(params, limit, offset)
 
 	rows, err := db.Query(strings.Join(queryParts, " "), params...)
@@ -2768,17 +2776,18 @@ func getMessageContext(db *sql.DB, req MessageContextRequest) (MessageContextRes
 	}
 
 	row := db.QueryRow(`
-		SELECT messages.timestamp, messages.sender, chats.name, messages.content, messages.is_from_me, chats.jid, messages.id, messages.chat_jid, messages.media_type
+		SELECT messages.timestamp, messages.sender, chats.name, messages.content, messages.is_from_me, chats.jid, messages.id, messages.chat_jid, messages.media_type, messages.rowid
 		FROM messages
 		JOIN chats ON messages.chat_jid = chats.jid
 		WHERE messages.id = ?
 	`, req.MessageID)
 
 	var timestamp time.Time
+	var rowID int64
 	var sender, content, chatJID, id, targetChatJID string
 	var chatName, mediaType sql.NullString
 	var isFromMe bool
-	err := row.Scan(&timestamp, &sender, &chatName, &content, &isFromMe, &chatJID, &id, &targetChatJID, &mediaType)
+	err := row.Scan(&timestamp, &sender, &chatName, &content, &isFromMe, &chatJID, &id, &targetChatJID, &mediaType, &rowID)
 	if err == sql.ErrNoRows {
 		return MessageContextResponse{}, false, nil
 	}
@@ -2800,10 +2809,10 @@ func getMessageContext(db *sql.DB, req MessageContextRequest) (MessageContextRes
 		SELECT messages.timestamp, messages.sender, chats.name, messages.content, messages.is_from_me, chats.jid, messages.id, messages.media_type
 		FROM messages
 		JOIN chats ON messages.chat_jid = chats.jid
-		WHERE messages.chat_jid = ? AND messages.timestamp < ?
-		ORDER BY messages.timestamp DESC
+		WHERE messages.chat_jid = ? AND (julianday(messages.timestamp), messages.rowid) < (julianday(?), ?)
+		ORDER BY julianday(messages.timestamp) DESC, messages.rowid DESC
 		LIMIT ?
-	`, targetChatJID, timestamp, before)
+	`, targetChatJID, timestamp, rowID, before)
 	if err != nil {
 		return MessageContextResponse{}, false, err
 	}
@@ -2824,10 +2833,10 @@ func getMessageContext(db *sql.DB, req MessageContextRequest) (MessageContextRes
 		SELECT messages.timestamp, messages.sender, chats.name, messages.content, messages.is_from_me, chats.jid, messages.id, messages.media_type
 		FROM messages
 		JOIN chats ON messages.chat_jid = chats.jid
-		WHERE messages.chat_jid = ? AND messages.timestamp > ?
-		ORDER BY messages.timestamp ASC
+		WHERE messages.chat_jid = ? AND (julianday(messages.timestamp), messages.rowid) > (julianday(?), ?)
+		ORDER BY julianday(messages.timestamp), messages.rowid
 		LIMIT ?
-	`, targetChatJID, timestamp, after)
+	`, targetChatJID, timestamp, rowID, after)
 	if err != nil {
 		return MessageContextResponse{}, false, err
 	}
@@ -2972,7 +2981,7 @@ func getContactChats(db *sql.DB, req ContactChatsRequest) (ChatsResponse, error)
 		limit = 20
 	}
 	rows, err := db.Query(`
-		SELECT DISTINCT
+		SELECT
 			c.jid,
 			c.name,
 			c.last_message_time,
@@ -2980,11 +2989,16 @@ func getContactChats(db *sql.DB, req ContactChatsRequest) (ChatsResponse, error)
 			m.sender as last_sender,
 			m.is_from_me as last_is_from_me
 		FROM chats c
-		JOIN messages m ON c.jid = m.chat_jid
-		WHERE m.sender = ? OR c.jid = ?
-		ORDER BY c.last_message_time DESC
+		LEFT JOIN messages m ON m.rowid = (
+			SELECT rowid FROM messages WHERE chat_jid = c.jid
+			ORDER BY julianday(timestamp) DESC, rowid DESC LIMIT 1
+		)
+		WHERE c.jid = ? OR EXISTS (
+			SELECT 1 FROM messages WHERE chat_jid = c.jid AND sender IN (?, ?)
+		)
+		ORDER BY julianday(c.last_message_time) DESC, c.jid
 		LIMIT ? OFFSET ?
-	`, req.JID, req.JID, limit, req.Page*limit)
+	`, req.JID, req.JID, jidUser(req.JID), limit, req.Page*limit)
 	if err != nil {
 		return ChatsResponse{}, err
 	}
@@ -3017,10 +3031,10 @@ func getLastInteraction(db *sql.DB, jid string) (LastInteractionResponse, error)
 			m.timestamp, m.sender, c.name, m.content, m.is_from_me, c.jid, m.id, m.media_type
 		FROM messages m
 		JOIN chats c ON m.chat_jid = c.jid
-		WHERE m.sender = ? OR c.jid = ?
-		ORDER BY m.timestamp DESC
+		WHERE m.sender IN (?, ?) OR c.jid = ?
+		ORDER BY julianday(m.timestamp) DESC, m.rowid DESC
 		LIMIT 1
-	`, jid, jid)
+	`, jid, jidUser(jid), jid)
 
 	msg, err := scanAPIMessageRow(row)
 	if err == sql.ErrNoRows {
@@ -3071,8 +3085,10 @@ func getChat(db *sql.DB, req ChatRequest) (ChatResponse, error) {
 			FROM chats c
 		`
 		query += `
-			LEFT JOIN messages m ON c.jid = m.chat_jid
-			AND c.last_message_time = m.timestamp
+			LEFT JOIN messages m ON m.rowid = (
+				SELECT rowid FROM messages WHERE chat_jid = c.jid
+				ORDER BY julianday(timestamp) DESC, rowid DESC LIMIT 1
+			)
 		`
 	}
 	query += " WHERE c.jid = ?"
@@ -3108,9 +3124,12 @@ func getDirectChatByContact(db *sql.DB, req ChatByContactRequest) (ChatResponse,
 		SELECT c.jid, c.name, c.last_message_time,
 		       m.content, m.sender, m.is_from_me
 		FROM chats c
-		LEFT JOIN messages m ON c.jid = m.chat_jid
-			AND c.last_message_time = m.timestamp
+		LEFT JOIN messages m ON m.rowid = (
+			SELECT rowid FROM messages WHERE chat_jid = c.jid
+			ORDER BY julianday(timestamp) DESC, rowid DESC LIMIT 1
+		)
 		WHERE c.jid IN (%s) AND c.jid NOT LIKE '%%@g.us'
+		ORDER BY julianday(c.last_message_time) DESC, c.jid
 		LIMIT 1
 	`, strings.Join(placeholders, ","))
 

@@ -134,7 +134,7 @@ def pending_audios(conn, limit=None):
            "WHERE media_type='audio' AND (content IS NULL OR content='') ")
     if not TRANSCRIBE_OUTGOING:
         sql += "AND COALESCE(is_from_me, 0) = 0 "
-    sql += "ORDER BY timestamp DESC"
+    sql += "ORDER BY julianday(timestamp) DESC, rowid DESC"
     if limit:
         sql += f" LIMIT {int(limit)}"
     return conn.execute(sql).fetchall()

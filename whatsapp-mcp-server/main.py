@@ -117,7 +117,9 @@ def list_messages(
     Args:
         after: Optional ISO-8601 formatted string to only return messages after this date
         before: Optional ISO-8601 formatted string to only return messages before this date
-        sender_phone_number: Optional phone number to filter messages by sender
+        sender_phone_number: Optional phone number; returns only messages this contact wrote,
+            in direct chats and groups. Your own replies are not included; for the whole
+            direct conversation pass chat_jid from get_direct_chat_by_contact instead
         chat_jid: Optional chat JID to filter messages by chat
         query: Optional search term to filter messages by content
         limit: Maximum number of messages to return (default 20)
