@@ -156,11 +156,13 @@ def list_chats(
     limit: int = 20,
     page: int = 0,
     include_last_message: bool = True,
-    sort_by: str = "last_active"
+    sort_by: str = "last_active",
+    unread_only: bool = False
 ) -> List[Dict[str, Any]]:
-    """Get WhatsApp chats matching specified criteria.
+    """Get WhatsApp chats with unread_count and marked_as_unread.
     
     Args:
+        unread_only: Only chats with unread messages or a manual unread badge
         query: Optional search term to filter chats by name or JID
         limit: Maximum number of chats to return (default 20)
         page: Page number for pagination (default 0)
@@ -172,7 +174,8 @@ def list_chats(
         limit=limit,
         page=page,
         include_last_message=include_last_message,
-        sort_by=sort_by
+        sort_by=sort_by,
+        unread_only=unread_only
     )
     return chats
 
@@ -199,7 +202,7 @@ def list_active_chats(
 
 @read_tool
 def get_chat(chat_jid: str, include_last_message: bool = True) -> Dict[str, Any]:
-    """Get WhatsApp chat metadata by JID.
+    """Get WhatsApp chat metadata by JID, including unread_count and marked_as_unread.
     
     Args:
         chat_jid: The JID of the chat to retrieve
@@ -450,7 +453,7 @@ def mark_chat_as_read(
 
 @write_tool
 def mark_chat_as_unread(chat_jid: str) -> Dict[str, Any]:
-    """Mark a WhatsApp chat as unread (app-state sync — affects WhatsApp app badge).
+    """Mark a chat as unread on WhatsApp and locally; keeps message read receipts intact.
 
     Args:
         chat_jid: The JID of the chat (e.g. 5511999999999@s.whatsapp.net or group@g.us)

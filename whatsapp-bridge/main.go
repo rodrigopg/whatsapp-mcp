@@ -147,6 +147,11 @@ func NewMessageStore() (*MessageStore, error) {
 		return nil, fmt.Errorf("failed to remove status broadcast: %v", err)
 	}
 
+	if err := migrateReadState(db); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("failed to migrate read state: %w", err)
+	}
+
 	_, err = db.Exec(`UPDATE messages SET sender = ''
 		WHERE chat_jid LIKE '%@g.us'
 		AND (sender = substr(chat_jid, 1, length(chat_jid) - 5) OR sender = chat_jid)`)
@@ -285,7 +290,10 @@ func (store *MessageStore) StoreChat(jid, name string, lastMessageTime time.Time
 
 // Store a message in the database
 func (store *MessageStore) StoreMessage(id, chatJID, sender, content string, timestamp time.Time, isFromMe bool,
-	mediaType, filename, url string, mediaKey, fileSHA256, fileEncSHA256 []byte, fileLength uint64) error {
+	mediaType, filename, url string, mediaKey, fileSHA256, fileEncSHA256 []byte, fileLength uint64, read ...messageReadState) error {
+	// Unknown history metadata must not clear a live unread row.
+	isRead := isFromMe || (len(read) > 0 && read[0] != messageUnread)
+	updateRead := isFromMe || len(read) == 0 || read[0] != messageReadUnknown
 	// Only store if there's actual content or media
 	if chatJID == "status@broadcast" || (content == "" && mediaType == "") {
 		return nil
@@ -324,13 +332,16 @@ func (store *MessageStore) StoreMessage(id, chatJID, sender, content string, tim
 	// else wrote. An unknown author on either side still refreshes the row.
 	res, err := store.db.Exec(
 		`INSERT INTO messages
-		(id, chat_jid, sender, content, timestamp, is_from_me, media_type, filename, url, media_key, file_sha256, file_enc_sha256, file_length)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		(id, chat_jid, sender, content, timestamp, is_from_me, media_type, filename, url, media_key, file_sha256, file_enc_sha256, file_length, is_read)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, (? OR EXISTS (SELECT 1 FROM read_receipts WHERE chat_jid = ? AND message_id = ?)
+			OR EXISTS (SELECT 1 FROM chats WHERE jid = ? AND julianday(?) <= julianday(read_through))))
 		ON CONFLICT(id, chat_jid) DO UPDATE SET
 			sender          = COALESCE(NULLIF(excluded.sender, ''), messages.sender),
 			content         = COALESCE(NULLIF(excluded.content, ''), messages.content),
 			timestamp       = excluded.timestamp,
 			is_from_me      = excluded.is_from_me,
+			is_read         = MAX(messages.is_read, CASE WHEN ? OR EXISTS (SELECT 1 FROM read_receipts WHERE chat_jid = excluded.chat_jid AND message_id = excluded.id)
+				OR EXISTS (SELECT 1 FROM chats WHERE jid = excluded.chat_jid AND julianday(excluded.timestamp) <= julianday(read_through)) THEN excluded.is_read ELSE 0 END),
 			media_type      = excluded.media_type,
 			filename        = excluded.filename,
 			url             = excluded.url,
@@ -340,7 +351,7 @@ func (store *MessageStore) StoreMessage(id, chatJID, sender, content string, tim
 			file_length     = excluded.file_length
 		WHERE messages.is_from_me = excluded.is_from_me
 			AND (excluded.is_from_me = 1 OR messages.sender = '' OR excluded.sender = '' OR messages.sender IN (excluded.sender, ?))`,
-		id, chatJID, sender, content, timestamp, isFromMe, mediaType, filename, url, mediaKey, fileSHA256, fileEncSHA256, fileLength,
+		id, chatJID, sender, content, timestamp, isFromMe, mediaType, filename, url, mediaKey, fileSHA256, fileEncSHA256, fileLength, isRead, chatJID, id, chatJID, timestamp, updateRead,
 		strings.TrimSuffix(sender, "@"+types.HiddenUserServer), // rows stored before senderKey hold a LID author as the bare user
 	)
 	if err == nil {
@@ -1867,7 +1878,7 @@ func normalizePhone(phone string) string {
 
 // safeSendAppState calls cli.SendAppState recovering from any panic (e.g. uninitialized
 // app-state keys during session restore) and returns it as a regular error.
-func safeSendAppState(cli *whatsmeow.Client, ctx context.Context, patch appstate.PatchInfo) (err error) {
+func safeSendAppState(cli appStateSender, ctx context.Context, patch appstate.PatchInfo) (err error) {
 	defer func() {
 		if r := recover(); r != nil {
 			err = fmt.Errorf("app state not ready: %v", r)
@@ -2292,6 +2303,8 @@ type APIChat struct {
 	LastMessage     *string `json:"last_message"`
 	LastSender      *string `json:"last_sender"`
 	LastIsFromMe    *bool   `json:"last_is_from_me"`
+	UnreadCount     int     `json:"unread_count"`
+	MarkedAsUnread  bool    `json:"marked_as_unread"`
 }
 
 // APIContact is the wire shape for a contact search result.
@@ -2436,7 +2449,7 @@ func nullBoolToPtr(b sql.NullBool) *bool {
 }
 
 // scanAPIChatRow scans one row shaped like the list_chats/get_chat/etc.
-// queries below: jid, name, last_message_time, last_message, last_sender, last_is_from_me.
+// queries below, including the unread count and manual unread badge.
 func scanAPIChatRow(rows interface {
 	Scan(dest ...interface{}) error
 }) (APIChat, error) {
@@ -2444,7 +2457,9 @@ func scanAPIChatRow(rows interface {
 	var name, lastMessage, lastSender sql.NullString
 	var lastMessageTime sql.NullTime
 	var lastIsFromMe sql.NullBool
-	err := rows.Scan(&jid, &name, &lastMessageTime, &lastMessage, &lastSender, &lastIsFromMe)
+	var unreadCount int
+	var markedAsUnread bool
+	err := rows.Scan(&jid, &name, &lastMessageTime, &lastMessage, &lastSender, &lastIsFromMe, &unreadCount, &markedAsUnread)
 	if err != nil {
 		return APIChat{}, err
 	}
@@ -2455,6 +2470,8 @@ func scanAPIChatRow(rows interface {
 		LastMessage:     nullStringToPtr(lastMessage),
 		LastSender:      nullStringToPtr(lastSender),
 		LastIsFromMe:    nullBoolToPtr(lastIsFromMe),
+		UnreadCount:     unreadCount,
+		MarkedAsUnread:  markedAsUnread,
 	}, nil
 }
 
@@ -2491,6 +2508,7 @@ type ChatsRequest struct {
 	Page               int     `json:"page"`
 	IncludeLastMessage *bool   `json:"include_last_message"`
 	SortBy             string  `json:"sort_by"`
+	UnreadOnly         bool    `json:"unread_only"`
 }
 
 type ChatsResponse struct {
@@ -2514,7 +2532,9 @@ func listChats(db *sql.DB, req ChatsRequest) (ChatsResponse, error) {
 			chats.last_message_time,
 			NULL as last_message,
 			NULL as last_sender,
-			NULL as last_is_from_me
+			NULL as last_is_from_me,
+			(SELECT COUNT(*) FROM messages u WHERE u.chat_jid = chats.jid AND u.is_read = 0 AND u.is_from_me = 0),
+			chats.marked_as_unread
 		FROM chats
 	`
 	if includeLastMessage {
@@ -2525,7 +2545,9 @@ func listChats(db *sql.DB, req ChatsRequest) (ChatsResponse, error) {
 				chats.last_message_time,
 				messages.content as last_message,
 				messages.sender as last_sender,
-				messages.is_from_me as last_is_from_me
+				messages.is_from_me as last_is_from_me,
+				(SELECT COUNT(*) FROM messages u WHERE u.chat_jid = chats.jid AND u.is_read = 0 AND u.is_from_me = 0),
+				chats.marked_as_unread
 			FROM chats
 		`
 	}
@@ -2541,6 +2563,9 @@ func listChats(db *sql.DB, req ChatsRequest) (ChatsResponse, error) {
 
 	var whereClauses []string
 	var params []interface{}
+	if req.UnreadOnly {
+		whereClauses = append(whereClauses, `(chats.marked_as_unread = 1 OR EXISTS (SELECT 1 FROM messages u WHERE u.chat_jid = chats.jid AND u.is_read = 0 AND u.is_from_me = 0))`)
+	}
 	if req.Query != nil && *req.Query != "" {
 		whereClauses = append(whereClauses, "(unaccent(chats.name) LIKE unaccent(?) OR chats.jid LIKE ?)")
 		params = append(params, "%"+*req.Query+"%", "%"+*req.Query+"%")
@@ -3079,7 +3104,9 @@ func getContactChats(db *sql.DB, req ContactChatsRequest) (ChatsResponse, error)
 			c.last_message_time,
 			m.content as last_message,
 			m.sender as last_sender,
-			m.is_from_me as last_is_from_me
+			m.is_from_me as last_is_from_me,
+			(SELECT COUNT(*) FROM messages u WHERE u.chat_jid = c.jid AND u.is_read = 0 AND u.is_from_me = 0),
+			c.marked_as_unread
 		FROM chats c
 		LEFT JOIN messages m ON m.rowid = (
 			SELECT rowid FROM messages WHERE chat_jid = c.jid
@@ -3162,7 +3189,9 @@ func getChat(db *sql.DB, req ChatRequest) (ChatResponse, error) {
 			c.last_message_time,
 			NULL as last_message,
 			NULL as last_sender,
-			NULL as last_is_from_me
+			NULL as last_is_from_me,
+			(SELECT COUNT(*) FROM messages u WHERE u.chat_jid = c.jid AND u.is_read = 0 AND u.is_from_me = 0),
+			c.marked_as_unread
 		FROM chats c
 	`
 	if includeLastMessage {
@@ -3173,7 +3202,9 @@ func getChat(db *sql.DB, req ChatRequest) (ChatResponse, error) {
 				c.last_message_time,
 				m.content as last_message,
 				m.sender as last_sender,
-				m.is_from_me as last_is_from_me
+				m.is_from_me as last_is_from_me,
+				(SELECT COUNT(*) FROM messages u WHERE u.chat_jid = c.jid AND u.is_read = 0 AND u.is_from_me = 0),
+				c.marked_as_unread
 			FROM chats c
 		`
 		query += `
@@ -3214,7 +3245,8 @@ func getDirectChatByContact(db *sql.DB, req ChatByContactRequest) (ChatResponse,
 	// #nosec G201 -- only "?" placeholders are formatted in; values are bound
 	query := fmt.Sprintf(`
 		SELECT c.jid, c.name, c.last_message_time,
-		       m.content, m.sender, m.is_from_me
+		       m.content, m.sender, m.is_from_me,
+		       (SELECT COUNT(*) FROM messages u WHERE u.chat_jid = c.jid AND u.is_read = 0 AND u.is_from_me = 0), c.marked_as_unread
 		FROM chats c
 		LEFT JOIN messages m ON m.rowid = (
 			SELECT rowid FROM messages WHERE chat_jid = c.jid
@@ -3644,21 +3676,9 @@ img{border:8px solid white;border-radius:8px;box-shadow:0 4px 20px rgba(0,0,0,.2
 			json.NewEncoder(w).Encode(MarkChatResponse{Success: false, Message: "WhatsApp client not connected"})
 			return
 		}
-		ctx := context.Background()
-		// Send read receipts to the sender(s)
-		if len(req.MessageIDs) > 0 {
-			if err := client.MarkRead(ctx, req.MessageIDs, ts, chatJID, senderJID); err != nil {
-				w.Header().Set("Content-Type", "application/json")
-				w.WriteHeader(http.StatusInternalServerError)
-				json.NewEncoder(w).Encode(MarkChatResponse{Success: false, Message: fmt.Sprintf("MarkRead error: %v", err)})
-				return
-			}
-		}
-		// Sync read state via app state so the unread badge clears on all devices
-		if err := safeSendAppState(client, ctx, appstate.BuildMarkChatAsRead(chatJID, true, ts, nil)); err != nil {
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusInternalServerError)
-			json.NewEncoder(w).Encode(MarkChatResponse{Success: false, Message: fmt.Sprintf("AppState error: %v", err)})
+		localChat := resolveToPN(client, chatJID).String()
+		if err := markChatRead(client, messageStore.db, chatJID, senderJID, req.MessageIDs, ts, localChat); err != nil {
+			writeJSONError(w, http.StatusInternalServerError, fmt.Sprintf("Mark read failed: %v", err))
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -3692,6 +3712,10 @@ img{border:8px solid white;border-radius:8px;box-shadow:0 4px 20px rgba(0,0,0,.2
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusInternalServerError)
 			json.NewEncoder(w).Encode(MarkChatResponse{Success: false, Message: fmt.Sprintf("AppState error: %v", err)})
+			return
+		}
+		if err := setChatReadState(messageStore.db, resolveToPN(client, chatJID).String(), false, time.Time{}); err != nil {
+			writeJSONError(w, http.StatusInternalServerError, fmt.Sprintf("Local unread state failed: %v", err))
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -4182,6 +4206,16 @@ func main() {
 		case *events.Message:
 			return handleMessage(client, messageStore, v, logger)
 
+		case *events.Receipt:
+			if err := handleReadReceipt(client, messageStore.db, v); err != nil {
+				logger.Warnf("Failed to store read receipt: %v", err)
+				return false
+			}
+		case *events.MarkChatAsRead:
+			if err := handleChatReadState(client, messageStore.db, v); err != nil {
+				logger.Warnf("Failed to store chat read state: %v", err)
+				return false
+			}
 		case *events.HistorySync:
 			// Process history sync events
 			lastHistoryUnix.Store(time.Now().Unix())
@@ -4472,10 +4506,12 @@ func handleHistorySync(client *whatsmeow.Client, messageStore *MessageStore, his
 		name := GetChatName(client, messageStore, jid, chatJID, conversation, "", logger)
 
 		// Process messages
+		readStates := historyReadStates(conversation)
 		messages := conversation.Messages
 		if len(messages) > 0 {
 			var latestTimestamp time.Time
 			chatEnsured := false
+			newChat := !chatExists(messageStore.db, chatJID)
 
 			// Store messages
 			for _, msg := range messages {
@@ -4534,6 +4570,12 @@ func handleHistorySync(client *whatsmeow.Client, messageStore *MessageStore, his
 						logger.Warnf("Failed to ensure history chat: %v", err)
 						break
 					}
+					if newChat && conversation.GetMarkedAsUnread() {
+						if err := setChatReadState(messageStore.db, chatJID, false, time.Time{}); err != nil {
+							logger.Warnf("Failed to store history unread badge: %v", err)
+							break
+						}
+					}
 					chatEnsured = true
 				}
 				err = messageStore.StoreMessage(
@@ -4550,6 +4592,7 @@ func handleHistorySync(client *whatsmeow.Client, messageStore *MessageStore, his
 					fileSHA256,
 					fileEncSHA256,
 					fileLength,
+					readStates[msgID],
 				)
 				if err != nil {
 					logger.Warnf("Failed to store history message: %v", err)
