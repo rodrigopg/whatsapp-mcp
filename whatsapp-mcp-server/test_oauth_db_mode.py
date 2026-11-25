@@ -18,10 +18,12 @@ class OAuthDatabaseMode(unittest.TestCase):
         self.addCleanup(tmp.cleanup)
         old = os.umask(0o022)
         self.addCleanup(os.umask, old)
-        path = os.path.join(tmp.name, "o.db")
-        self.assertEqual(self.open(path), 0o600, "a new database")
-        os.chmod(path, 0o644)
-        self.assertEqual(self.open(path), 0o600, "a database an older version created")
+        self.assertEqual(self.open(os.path.join(tmp.name, "new.db")), 0o600, "a new database")
+        older = os.path.join(tmp.name, "older.db")
+        with open(older, "w"):  # created with the default mode, as an older version did
+            pass
+        self.assertNotEqual(stat.S_IMODE(os.stat(older).st_mode), 0o600)
+        self.assertEqual(self.open(older), 0o600, "a database an older version created")
 
 
 if __name__ == "__main__":
