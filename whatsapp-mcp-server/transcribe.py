@@ -106,7 +106,14 @@ SENTINEL_EMPTY = "[áudio sem transcrição]"
 SENTINEL_UNAVAILABLE = "[áudio indisponível: mídia expirada no servidor]"
 
 
-def log(msg):
+def log_content_enabled():
+    return os.environ.get("WHATSAPP_LOG_CONTENT", "").strip().lower() in ("1", "true", "yes", "on")
+
+
+def log(msg, content=None):
+    """Print a progress line. Message text goes to the log only with WHATSAPP_LOG_CONTENT=1."""
+    if content is not None and log_content_enabled():
+        msg += f" content={content!r}"
     print(f"[{time.strftime('%H:%M:%S')}] {msg}", flush=True)
 
 
@@ -372,7 +379,7 @@ def main():
             if text:
                 write_content(msg_id, chat_jid, text)
                 done += 1
-                log(f"{prefix} ok ({len(text)} chars): {text[:60]}...")
+                log(f"{prefix} ok ({len(text)} chars)", content=text)
             else:
                 write_content(msg_id, chat_jid, SENTINEL_EMPTY)
                 empty += 1

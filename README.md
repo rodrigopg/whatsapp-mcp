@@ -170,6 +170,7 @@ The voice model is never part of this repo. For Brazilian Portuguese, [`rhasspy/
 - `API_AUTH_TOKEN` env var (bridge) — bearer token required on all `/api/*` requests once `BIND_ADDR` is non-loopback
 - `API_ALLOWED_HOSTS` env var (bridge) — only for a bridge running without `API_AUTH_TOKEN`: extra host names (comma separated, no port) accepted in the `Host` header of `/api/*` requests, when a local client reaches the bridge through a name other than `localhost`, `127.0.0.1` or `[::1]` (a local reverse proxy, for example)
 - `MEDIA_ALLOWED_ROOTS` env var (bridge) — folders (separated by `:`, or `;` on Windows) that files sent with `send_file` / `send_audio_message` must be inside; unset, files are sent only from the Downloads folder, the temp folder and downloaded media (see [Security](#security) above)
+- `WHATSAPP_LOG_CONTENT` env var (bridge and MCP server) — set to `1` to write message text and voice-note transcripts to the logs; unset, the bridge logs one line per message with chat, sender, type and length, and the transcription sweep logs the transcript length only
 - Transcription env vars — see [Audio transcription](#audio-transcription-opt-in) above
 - `WEBHOOK_URL` / `WEBHOOK_SECRET` env vars — opt-in outbound webhooks, see [Webhooks](#webhooks-opt-in) below
 
