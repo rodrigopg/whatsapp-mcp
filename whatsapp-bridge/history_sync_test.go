@@ -310,7 +310,7 @@ func TestMediaRetryRejectsUnknownGroupAuthor(t *testing.T) {
 		if err == nil || !strings.Contains(err.Error(), "unknown group message sender") {
 			t.Fatalf("retry for %q: %v", sender, err)
 		}
-		if _, ok := mediaRetryCache.consume("retry"); ok {
+		if _, ok := mediaRetryCache.consume("123-456@g.us", "retry", func(mediaRetryEntry) bool { return true }); ok {
 			t.Error("invalid retry cached")
 		}
 	}
