@@ -4937,6 +4937,8 @@ func handleMediaRetry(client mediaDownloadClient, messageStore *MessageStore, ev
 		}, file)
 	}); err != nil {
 		fmt.Printf("MEDIA RETRY %s: ERROR download with fresh path failed: %v\n", evt.MessageID, err)
+		// The phone did re-upload, so a new retry can succeed; NOTONPHONE keeps the hourly limit.
+		mediaRetryCache.forget(entry.chatJID, evt.MessageID)
 		return
 	}
 	info, err := os.Stat(localPath)

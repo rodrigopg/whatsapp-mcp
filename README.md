@@ -79,6 +79,7 @@ WhatsApp has been migrating contacts from phone-based JIDs (`+55...@s.whatsapp.n
 ### Media improvements
 - Document uploads now use stdlib MIME detection instead of hardcoding `application/octet-stream`
 - `FileName` field set on `DocumentMessage` so files display correctly in WhatsApp
+- Downloads are written to a temp file and kept only when size and SHA-256 match, so a cut download is never served. A cached file that fails the check (for example, truncated by an older bridge) is downloaded again; if the media has already expired on the CDN, `download_media` now returns an error instead of the broken file, and a media retry can recover it
 
 ### Group management (new MCP tools)
 - **`create_group`** — create a new WhatsApp group with a name and participants; optionally create as a community parent or sub-group

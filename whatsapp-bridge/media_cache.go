@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"time"
 
 	"go.mau.fi/whatsmeow"
 )
@@ -80,7 +81,21 @@ func (f attemptFile) ReadFrom(r io.Reader) (int64, error) {
 	return io.Copy(f.File, r)
 }
 
+// staleMediaTemp is older than any download could still be running.
+const staleMediaTemp = time.Hour
+
+// removeStaleMediaTemps drops temp files a crash left in a chat folder.
+func removeStaleMediaTemps(dir string) {
+	names, _ := filepath.Glob(filepath.Join(dir, ".media-*.tmp"))
+	for _, name := range names {
+		if info, err := os.Lstat(name); err == nil && info.Mode().IsRegular() && time.Since(info.ModTime()) > staleMediaTemp {
+			_ = os.Remove(name)
+		}
+	}
+}
+
 func writeMediaFile(path string, length uint64, hash []byte, download func(whatsmeow.File) error) error {
+	removeStaleMediaTemps(filepath.Dir(path))
 	file, err := os.CreateTemp(filepath.Dir(path), ".media-*.tmp")
 	if err != nil {
 		return err
