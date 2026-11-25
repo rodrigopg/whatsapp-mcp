@@ -14,6 +14,7 @@ import (
 	"html/template"
 	"net"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"os"
 	"strconv"
@@ -28,6 +29,8 @@ const (
 	panelCookie      = "panel"
 	panelCookieTTL   = 30 * 24 * time.Hour
 	loginMaxFails    = 10
+	loginMaxClients  = 1024     // addresses with wrong keys remembered at once
+	panelMaxBody     = 64 << 10 // a panel form is a few short fields
 	loginWindow      = 15 * time.Minute
 	diagnoseTimeout  = 5 * time.Second
 	diagnoseInterval = 10 * time.Second
@@ -179,11 +182,35 @@ type panel struct {
 	db        *sql.DB // messages.db, for /status/insights
 	now       func() time.Time
 
-	mu        sync.Mutex
-	fails     int
-	failsFrom time.Time
-	diag      *diagResult
-	diagAt    time.Time
+	mu     sync.Mutex
+	fails  map[string]loginFails // wrong keys per client (clientKey), within loginWindow
+	diag   *diagResult
+	diagAt time.Time
+}
+
+// loginFails counts one client's wrong keys since from.
+type loginFails struct {
+	n    int
+	from time.Time
+}
+
+// clientKey names who is typing keys: the peer address, or its /64 for IPv6 (one network holds all
+// of those). Behind a reverse proxy every visitor has the proxy's address and shares one count.
+func clientKey(remoteAddr string) string {
+	host, _, err := net.SplitHostPort(remoteAddr)
+	if err != nil {
+		host = remoteAddr
+	}
+	addr, err := netip.ParseAddr(host)
+	if err != nil {
+		return host
+	}
+	if addr = addr.Unmap().WithZone(""); addr.Is6() {
+		if p, err := addr.Prefix(64); err == nil {
+			return p.String()
+		}
+	}
+	return addr.String()
 }
 
 func newPanel(token, publicURL string, info func() statusInfo, sup reconnecter) *panel {
@@ -287,6 +314,7 @@ func (p *panel) allowed(w http.ResponseWriter, r *http.Request) bool {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return false
 	}
+	r.Body = http.MaxBytesReader(w, r.Body, panelMaxBody)
 	if !sameOrigin(r) || !p.authed(r) {
 		http.Error(w, "Forbidden", http.StatusForbidden)
 		return false
@@ -323,14 +351,30 @@ func (p *panel) login(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Forbidden", http.StatusForbidden)
 		return
 	}
+	r.Body = http.MaxBytesReader(w, r.Body, panelMaxBody)
+	key, who := r.FormValue("key"), clientKey(r.RemoteAddr)
 	p.mu.Lock()
-	if p.now().Sub(p.failsFrom) > loginWindow {
-		p.fails, p.failsFrom = 0, p.now()
+	now := p.now()
+	for k, f := range p.fails {
+		if now.Sub(f.from) > loginWindow {
+			delete(p.fails, k)
+		}
 	}
-	locked := p.fails >= loginMaxFails
-	ok := !locked && p.keyOK(r.FormValue("key"))
+	if _, known := p.fails[who]; !known && len(p.fails) >= loginMaxClients {
+		who = "" // ponytail: past the cap new addresses share one count; per-network buckets if this ever matters
+	}
+	f := p.fails[who]
+	locked := f.n >= loginMaxFails
+	ok := !locked && p.keyOK(key)
 	if !locked && !ok {
-		p.fails++
+		if f.n == 0 {
+			f.from = now
+		}
+		f.n++
+		if p.fails == nil {
+			p.fails = make(map[string]loginFails)
+		}
+		p.fails[who] = f
 	}
 	p.mu.Unlock()
 	switch {

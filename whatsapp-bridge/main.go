@@ -4053,10 +4053,18 @@ img{border:8px solid white;border-radius:8px;box-shadow:0 4px 20px rgba(0,0,0,.2
 
 	// Run server in a goroutine so it doesn't block
 	go func() {
-		if err := http.ListenAndServe(serverAddr, finalHandler); err != nil {
+		if err := newRESTServer(serverAddr, finalHandler).ListenAndServe(); err != nil {
 			fmt.Printf("REST API server error: %v\n", err)
 		}
 	}()
+}
+
+// newRESTServer is the HTTP server of the API and the panel. A client must send its request
+// within the read timeouts, so half-open connections do not pile up. No write timeout: sending a
+// large file or downloading media legitimately takes minutes.
+func newRESTServer(addr string, h http.Handler) *http.Server {
+	return &http.Server{Addr: addr, Handler: h,
+		ReadHeaderTimeout: 10 * time.Second, ReadTimeout: time.Minute, IdleTimeout: 2 * time.Minute}
 }
 
 func main() {
