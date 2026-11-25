@@ -101,7 +101,15 @@ if [[ -f "$INSTALL_DIR/start-bridge.sh" ]]; then
     case "$line" in
       WHATSAPP_STORE_DIR=*' WHATSAPP_BRIDGE_PORT='*' exec ./whatsapp-bridge')
         assignment="${line% WHATSAPP_BRIDGE_PORT=*}"
-        eval "PREVIOUS_STORE_DIR=${assignment#WHATSAPP_STORE_DIR=}"
+        # Unquote the %q value without executing it: a hand-edited launcher must not run code here.
+        PREVIOUS_STORE_DIR=$(python3 - "${assignment#WHATSAPP_STORE_DIR=}" <<'PY'
+import codecs, re, shlex, sys
+v = sys.argv[1]
+m = re.fullmatch(r"\$'((?:[^'\\]|\\.)*)'", v, re.S)
+out = codecs.escape_decode(m.group(1).encode())[0].decode() if m else (shlex.split(v) or [""])[0]
+sys.stdout.write(out + "#")
+PY
+) && PREVIOUS_STORE_DIR="${PREVIOUS_STORE_DIR%#}" || PREVIOUS_STORE_DIR=""
         ;;
     esac
   done < "$INSTALL_DIR/start-bridge.sh"

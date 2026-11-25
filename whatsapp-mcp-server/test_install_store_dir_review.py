@@ -51,6 +51,16 @@ class InstallStoreDirReviewTest(unittest.TestCase):
             self.run_install(root, "")
             self.assertEqual(self.launch_store(root), "")
 
+    def test_hand_edited_launcher_is_not_executed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.fixture(root)
+            marker = root / "ran"
+            (root / "start-bridge.sh").write_text(
+                f"WHATSAPP_STORE_DIR=$(touch {marker}) WHATSAPP_BRIDGE_PORT=8080 exec ./whatsapp-bridge\n")
+            self.run_install(root)
+            self.assertFalse(marker.exists())
+
     def test_relative_install_path_is_saved_as_absolute(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
