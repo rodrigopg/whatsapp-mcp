@@ -66,6 +66,14 @@ WhatsApp has been migrating contacts from phone-based JIDs (`+55...@s.whatsapp.n
 - `resolveToPN` in the Go bridge normalizes LID→PN at write time so the same contact never splits across two `chat_jid` values
 - `migrateLIDChats` runs at startup and merges any existing `@lid` chat rows into their `@s.whatsapp.net` equivalents (transactional, idempotent)
 
+### Message text search
+
+`list_messages(query=...)` uses a local FTS5 index when SQLite supports it. The installer and Docker image build with `-tags sqlite_fts5`; for manual builds, run `go build -tags sqlite_fts5 -o whatsapp-bridge .` inside `whatsapp-bridge/`. A plain `go build` still works and keeps the existing accent-insensitive LIKE search.
+
+FTS5 finds messages containing every word of the query as the start of a word, ignoring case and Latin accents: `cafe sao` matches `Café São` and `cafeteria em São Paulo`, but `teria` does not match `cafeteria`. Quotes, `OR`, `NOT`, `*` and other FTS syntax are treated as text, not search operators; punctuation separates words. All date, sender, chat and pagination filters still apply, with newest messages first. LIKE retains substring matching and its `%`/`_` wildcards.
+
+Existing history is indexed in the background in transactions of up to 500 messages, with 25 ms pauses between batches. Search uses LIKE until the entire index is ready; interrupted backfills resume on restart. Transcriptions in `messages.content`, edits, LID merges and local deletions update the index automatically. Starting a binary without FTS5 disables the index triggers; the next FTS5-capable start rebuilds the index in the background. No re-sync or manual migration is needed.
+
 ### Contact name display
 - New `senders` table in `messages.db` stores `full_name`, `push_name`, `business_name` per sender
 - `SyncAllContacts` bulk-upserts the whatsmeow contact store into `senders` on connect and after each history sync
@@ -112,7 +120,7 @@ Optional, for both engines:
 Voice notes **you sent** are skipped by default (an API engine would otherwise upload audio you never asked to transcribe). Set `TRANSCRIBE_OUTGOING=1` to include them, e.g. for `/whats:clone`, which reads transcripts of your own audio.
 
 **Where these vars must live** depends on how the bridge starts — the 5-minute sweep inherits the bridge process's environment, *not* your interactive shell's:
-- **`go run main.go` / running `./whatsapp-bridge` by hand** — `export` them in the same shell first, or prefix the command.
+- **`go run -tags sqlite_fts5 .` / running `./whatsapp-bridge` by hand** — `export` them in the same shell first, or prefix the command.
 - **`start-bridge.sh` (from `install.sh`) or macOS launchd auto-start** — `export` in your shell will **not** reach launchd. Instead create `~/.whatsapp-mcp/transcription.env` with the vars (one `export VAR=value` per line); `start-bridge.sh` sources it, so both the manual launcher and launchd pick them up.
 
 Once an engine is configured: new voice messages become searchable within ~5 minutes, and **`list_messages` matches their transcribed text** like any other message.
@@ -121,7 +129,7 @@ When installed as a Claude Code plugin, run the backfill/recovery scripts from `
 
 The backfill/recovery scripts are separate processes that read the engine vars from *their own* shell — so `source ~/.whatsapp-mcp/transcription.env` (or re-`export` the vars) in the shell you run them from; the `transcription.env` you set up for the bridge does not reach them automatically. Then, from `whatsapp-mcp-server/`:
 - **`python3 transcribe.py`** — backfill existing audios that are still downloadable.
-- **`python3 recover_audios.py`** — for audios that expired from WhatsApp's CDN (shown as `[áudio indisponível…]`); requires your **phone online**. This one scrapes the bridge's log to confirm each re-upload, so the bridge must be logging to a *file* and `WHATSAPP_BRIDGE_LOG` must point at it (a foreground `go run main.go` logs to the terminal, not a file). With the `install.sh` launchd setup the log is at `~/.whatsapp-mcp/bridge.log`, so run `WHATSAPP_BRIDGE_LOG=~/.whatsapp-mcp/bridge.log python3 recover_audios.py`.
+- **`python3 recover_audios.py`** — for audios that expired from WhatsApp's CDN (shown as `[áudio indisponível…]`); requires your **phone online**. This one scrapes the bridge's log to confirm each re-upload, so the bridge must be logging to a *file* and `WHATSAPP_BRIDGE_LOG` must point at it (a foreground `go run -tags sqlite_fts5 .` logs to the terminal, not a file). With the `install.sh` launchd setup the log is at `~/.whatsapp-mcp/bridge.log`, so run `WHATSAPP_BRIDGE_LOG=~/.whatsapp-mcp/bridge.log python3 recover_audios.py`.
 
 ### Open matters, favorites and the morning summary
 
@@ -321,7 +329,8 @@ env = { WHATSAPP_BRIDGE_PORT = "8080" }
 
    ```bash
    cd whatsapp-bridge
-   go run main.go
+   go build -tags sqlite_fts5 -o whatsapp-bridge .
+   ./whatsapp-bridge
    ```
 
    On first run, open **http://localhost:8080/qr** in your browser and scan the QR code with WhatsApp (Settings → Linked Devices → Link a Device). The page auto-refreshes when a new code is generated. On macOS the QR is also saved to `store/whatsapp-qr.png` in the bridge folder and opened in Preview.
@@ -356,7 +365,8 @@ env = { WHATSAPP_BRIDGE_PORT = "8080" }
 ```bash
 cd whatsapp-bridge
 go env -w CGO_ENABLED=1
-go run main.go
+go build -tags sqlite_fts5 -o whatsapp-bridge.exe .
+./whatsapp-bridge.exe
 ```
 
 ---

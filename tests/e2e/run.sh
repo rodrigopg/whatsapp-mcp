@@ -22,10 +22,10 @@ echo "branch: $(git -C "$ROOT" branch --show-current) @ $(git -C "$ROOT" rev-par
 
 step "Tier 0: offline"
 if [ "$MODE" = native ]; then
-  run "go build + vet + test" sh -c "cd '$ROOT/whatsapp-bridge' && go build -o /tmp/wb . && go vet ./... && go test ./..."
+  run "go build + vet + test" sh -c "cd '$ROOT/whatsapp-bridge' && go build -tags sqlite_fts5 -o /tmp/wb . && go vet -tags sqlite_fts5 ./... && go test -tags sqlite_fts5 ./... && go test ./..."
 else
   run "go build + vet + test" docker run --rm -v "$ROOT/whatsapp-bridge":/src -w /src golang:1.26-bookworm \
-      sh -c 'go build -o /tmp/wb . && go vet ./... && go test ./...'
+      sh -c 'go build -tags sqlite_fts5 -o /tmp/wb . && go vet -tags sqlite_fts5 ./... && go test -tags sqlite_fts5 ./... && go test ./...'
 fi
 run "python unit tests" sh -c "cd '$ROOT/whatsapp-mcp-server' && uv run python -m unittest discover -p 'test_*.py'"
 if [ "$MODE" != native ]; then

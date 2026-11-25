@@ -3,7 +3,7 @@ WORKDIR /src
 COPY whatsapp-bridge/go.mod whatsapp-bridge/go.sum ./
 RUN go mod download
 COPY whatsapp-bridge/ ./
-RUN CGO_ENABLED=1 go build -o /whatsapp-bridge .
+RUN CGO_ENABLED=1 go build -tags sqlite_fts5 -o /whatsapp-bridge .
 
 FROM python:3.12-slim-bookworm
 RUN apt-get update \

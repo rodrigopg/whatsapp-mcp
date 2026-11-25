@@ -22,7 +22,7 @@ A **personal-history MCP server for WhatsApp**: your own messages, searchable, s
 ## How to send a change
 1. Open the PR against `main` (never against another branch: GitHub closes it when that branch is deleted).
 2. Keep it small and single-purpose. Put new Go tests in a new `<feature>_test.go` and new Python tests in a new `test_<feature>.py` (they are discovered automatically), so parallel PRs do not conflict. List new MCP tools one name per line in `MCP_TOOLS` in `tests/e2e/e2e.py`.
-3. `cd whatsapp-bridge && go build ./... && go vet ./... && go test ./...` and `cd whatsapp-mcp-server && uv run python -m unittest discover -p 'test_*.py'` must pass. CI runs both.
+3. `cd whatsapp-bridge && go build -tags sqlite_fts5 ./... && go vet -tags sqlite_fts5 ./... && go test -tags sqlite_fts5 ./... && go test ./...` and `cd whatsapp-mcp-server && uv run python -m unittest discover -p 'test_*.py'` must pass. CI tests both SQLite modes.
 4. The live end-to-end gate (`tests/e2e/`) needs two paired WhatsApp accounts, so it runs on the maintainer's side for maintainer PRs. See `tests/e2e/README.md`.
 
 ## What to expect
