@@ -74,6 +74,8 @@ FTS5 finds messages containing every word of the query as the start of a word, i
 
 Existing history is indexed in the background in transactions of up to 500 messages, with 25 ms pauses between batches. Search uses LIKE until the entire index is ready; interrupted backfills resume on restart. Transcriptions in `messages.content`, edits, LID merges and local deletions update the index automatically. Starting a binary without FTS5 disables the index triggers; the next FTS5-capable start rebuilds the index in the background. No re-sync or manual migration is needed.
 
+Going back to a bridge version from before FTS search: that version does not know the index, and every write to `messages.db` fails with `no such module: fts5` while the index triggers exist. With the bridge stopped, drop them first: `sqlite3 store/messages.db 'DROP TRIGGER IF EXISTS messages_fts_insert; DROP TRIGGER IF EXISTS messages_fts_update; DROP TRIGGER IF EXISTS messages_fts_delete;'`. The index tables can stay; a later FTS5 start rebuilds the index.
+
 ### Contact name display
 - New `senders` table in `messages.db` stores `full_name`, `push_name`, `business_name` per sender
 - `SyncAllContacts` bulk-upserts the whatsmeow contact store into `senders` on connect and after each history sync
