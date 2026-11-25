@@ -268,11 +268,16 @@ def list_messages(
         "limit": limit,
         "page": page,
     }
+    if include_context:
+        payload.update(include_context=True, context_before=context_before, context_after=context_after)
 
     result = _api_post("/messages", payload)
-    messages = [_message_from_dict(m) for m in result.get("messages", [])]
+    data = result.get("messages")
+    if not isinstance(data, list) or any(not isinstance(m, dict) for m in data):
+        raise BridgeError("Bridge returned an invalid messages response")
+    messages = [_message_from_dict(m) for m in data]
 
-    if include_context and messages:
+    if include_context and result.get("context_included") is not True and messages:
         messages_with_context = []
         context_failures = []
         for msg in messages:
@@ -284,13 +289,6 @@ def list_messages(
             except BridgeError:
                 raise
             except Exception as e:
-                # A single failed context lookup shouldn't sink the whole batch -
-                # fall back to the bare message. But unlike a genuine "not found"
-                # (which get_message_context itself distinguishes), any failure here
-                # silently degrades results the caller can't otherwise detect, so
-                # surface it in the response text instead of only a stdout print
-                # (this server runs over stdio, where stdout is the JSON-RPC channel,
-                # not a readable log).
                 context_failures.append(f"{msg.id} ({e})")
                 messages_with_context.append(msg)
 
