@@ -107,6 +107,7 @@ Voice messages are stored with empty searchable text by default. Enable transcri
 
 Optional, for both engines:
 - `TRANSCRIPTION_LANGUAGE` — ISO-639-1 code of your voice notes (`pt`, `en`, `es`, ...). Defaults to `pt` (Portuguese), preserving existing installs. Set `auto` explicitly to let Whisper detect the language per audio.
+- `TRANSCRIPTION_TIMEOUT` — seconds one local whisper run may take before that audio counts as failed and the sweep moves on (default `600`; ffmpeg gets 120 s).
 - `TRANSCRIPTION_PROMPT` — biases transcription toward correct punctuation and domain terms. For `pt`, the default is `A seguir, a transcrição de um áudio. A transcrição deve ser precisa, com pontuação e capitalização corretas.` Other languages and `auto` have no default prompt. Set this variable to override the prompt for any language; an empty value (`TRANSCRIPTION_PROMPT=""`) disables it. Write prompts in the language of the audios.
 
 Voice notes **you sent** are skipped by default (an API engine would otherwise upload audio you never asked to transcribe). Set `TRANSCRIBE_OUTGOING=1` to include them, e.g. for `/whats:clone`, which reads transcripts of your own audio.
