@@ -467,7 +467,7 @@ class TestNotice(TTSTestCase):
         with FakeServer(respond) as server, self.local():
             success, message = self.call(server, "Olá", "aviso")
         self.assertFalse(success)
-        self.assertIn("notice refused", message)
+        self.assertIn("Bridge operation failed", message)
         self.assertEqual(len(server.requests), 1)
         self.assertNotIn("media_path", json.loads(server.requests[0]["body"]))
         self.assertNoLeftovers()

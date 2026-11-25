@@ -26,12 +26,13 @@ class ChatBackfillTest(unittest.TestCase):
                 post.assert_not_called()
 
     def test_bridge_errors_reach_the_caller(self):
+        no_history = "No stored messages for this chat; cannot request earlier history"
         for status, body, expected in [
-                (404, {"error": "No stored messages for this chat"}, "No stored messages"),
-                (500, {"error": "Failed to request chat history from phone"}, "Failed to request chat history"),
+                (404, {"error": no_history}, no_history + " (HTTP 404)"),
+                (500, {"error": "Failed to request chat history from phone: timed out"}, "HTTP 500"),
                 (401, {}, "HTTP 401"),
-                (200, {"success": False, "message": "refused"}, "refused"),
-                (200, [], "unexpected response")]:
+                (200, {"success": False, "message": "refused"}, "operation failed"),
+                (200, [], "invalid response")]:
             response = Mock(status_code=status)
             response.json.return_value = body
             with self.subTest(status=status), patch("whatsapp._api_request", return_value=response):
@@ -39,15 +40,15 @@ class ChatBackfillTest(unittest.TestCase):
                 self.assertFalse(ok)
                 self.assertIn(expected, message)
         for status, text, expected in [
-                (403, "Forbidden: API is read-only\n", "Bridge request failed (HTTP 403): Forbidden: API is read-only"),
-                (200, "<html>", "Bridge returned invalid JSON (HTTP 200)")]:
+                (403, "Forbidden: API is read-only\n", "Bridge access denied; check API_AUTH_TOKEN and API_ALLOWED_HOSTS (HTTP 403)"),
+                (200, "<html>", "Bridge returned invalid JSON")]:
             response = Mock(status_code=status, text=text)
             response.json.side_effect = requests.exceptions.JSONDecodeError("bad", "", 0)
             with self.subTest(status=status), patch("whatsapp._api_request", return_value=response):
                 self.assertEqual(whatsapp.request_chat_history("111@s.whatsapp.net"), (False, expected))
-        with patch("whatsapp._api_request", side_effect=requests.ConnectionError("refused")):
+        with patch("whatsapp._api_request", side_effect=whatsapp.BridgeError("Bridge unavailable")):
             self.assertEqual(whatsapp.request_chat_history("111@s.whatsapp.net"),
-                             (False, "Request error: refused"))
+                             (False, "Bridge unavailable"))
 
     @patch.dict("sys.modules")
     def test_tool_registered_as_write_and_forwards_arguments(self):

@@ -13,7 +13,7 @@ SECRET = "private-response-or-url"
 
 
 def response(status=200, body=None):
-    return Mock(status_code=status, text=SECRET, json=Mock(return_value=body))
+    return Mock(status_code=status, text=SECRET, headers={}, json=Mock(return_value=body))
 
 
 class BridgeErrors(unittest.IsolatedAsyncioTestCase):
@@ -34,7 +34,7 @@ class BridgeErrors(unittest.IsolatedAsyncioTestCase):
             ({"return_value": response(body=[])}, "invalid response"),
         )
         for kwargs, reason in cases:
-            with self.subTest(reason), patch("whatsapp.requests.post", **kwargs), self.assertNoLogs("whatsapp", level="WARNING"):
+            with self.subTest(reason), patch("whatsapp.requests.post", **kwargs), self.assertLogs("whatsapp", level="WARNING"):
                 result = await self.call(mod, "list_messages", {"include_context": False})
                 self.assertTrue(result.isError)
                 text = " ".join(c.text for c in result.content)
@@ -58,7 +58,7 @@ class BridgeErrors(unittest.IsolatedAsyncioTestCase):
                 self.assertNotIn(SECRET, result.content[0].text)
 
     def test_action_auth_error_does_not_include_response_body(self):
-        with patch("whatsapp.requests.request", return_value=response(401)):
+        with patch("whatsapp.requests.post", return_value=response(401)):
             ok, reason = whatsapp.send_contact("test", "name", "test")
         self.assertFalse(ok)
         self.assertIn("HTTP 401", reason)
