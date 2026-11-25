@@ -7,6 +7,11 @@ import (
 	"strings"
 )
 
+// maxAPIBody caps /api/ request bodies. They are JSON with text, JIDs and file paths, never file
+// bytes, so 1 MiB is far above any real request; without a cap one request could make the bridge
+// buffer an arbitrarily large body while decoding it.
+const maxAPIBody = 1 << 20
+
 // apiHosts lists the host names an /api/ request may carry in its Host header when no token is
 // set: loopback (the only bind address allowed without a token), plus API_ALLOWED_HOSTS (comma
 // separated names, no port) for a bridge reached through another name, e.g. a local reverse proxy.
@@ -50,6 +55,11 @@ func apiGuard(token string, hosts map[string]bool, next http.Handler) http.Handl
 			next.ServeHTTP(w, r)
 			return
 		}
+		if r.ContentLength > maxAPIBody {
+			http.Error(w, "Request body too large", http.StatusRequestEntityTooLarge)
+			return
+		}
+		r.Body = http.MaxBytesReader(w, r.Body, maxAPIBody)
 		if token != "" {
 			if subtle.ConstantTimeCompare([]byte(r.Header.Get("Authorization")), []byte("Bearer "+token)) != 1 {
 				http.Error(w, "Unauthorized", http.StatusUnauthorized)
