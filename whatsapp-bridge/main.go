@@ -68,13 +68,16 @@ type MessageStore struct {
 
 // Initialize message store
 func NewMessageStore() (*MessageStore, error) {
+	if err := checkStoreDir(); err != nil {
+		return nil, err
+	}
 	// Create directory for database if it doesn't exist
-	if err := os.MkdirAll("store", 0o700); err != nil {
+	if err := os.MkdirAll(storePath(), 0o700); err != nil {
 		return nil, fmt.Errorf("failed to create store directory: %v", err)
 	}
 
 	// Open SQLite database for messages
-	db, err := sql.Open("sqlite3", "file:store/messages.db?_foreign_keys=on")
+	db, err := sql.Open("sqlite3", storeDSN("messages.db", "_foreign_keys=on"))
 	if err != nil {
 		return nil, fmt.Errorf("failed to open message database: %v", err)
 	}
@@ -2033,7 +2036,7 @@ func chatMediaDir(chatJID string) (string, error) {
 	if name == "" || name == "." || strings.Contains(name, "..") || strings.ContainsAny(name, `/\`) {
 		return "", fmt.Errorf("unsafe chat id for a media folder: %q", chatJID)
 	}
-	return filepath.Join("store", name), nil
+	return storePath(name), nil
 }
 
 func safeMediaPath(chatDir, messageID, filename string) (string, error) {
@@ -2317,7 +2320,7 @@ func writeJSON(w http.ResponseWriter, v interface{}) {
 // messageStore.db (which uses the plain "sqlite3" driver) to avoid touching
 // the existing write path.
 func openUnaccentMessagesDB() (*sql.DB, error) {
-	return sql.Open("sqlite3_unaccent", "file:store/messages.db?_foreign_keys=on")
+	return sql.Open("sqlite3_unaccent", storeDSN("messages.db", "_foreign_keys=on"))
 }
 
 // openStoreDBReadOnly opens a read-only connection to whatsmeow's own
@@ -2326,7 +2329,7 @@ func openUnaccentMessagesDB() (*sql.DB, error) {
 // their own handle here. mode=ro avoids interfering with whatsmeow's writes;
 // _busy_timeout tolerates brief lock contention instead of failing immediately.
 func openStoreDBReadOnly() (*sql.DB, error) {
-	return sql.Open("sqlite3", "file:store/whatsapp.db?mode=ro&_busy_timeout=5000")
+	return sql.Open("sqlite3", storeDSN("whatsapp.db", "mode=ro&_busy_timeout=5000"))
 }
 
 // resolvePhoneToJIDs mirrors _resolve_phone_to_jids: returns every JID form
@@ -4104,19 +4107,23 @@ func main() {
 	// Create database connection for storing session data
 	dbLog := waLog.Stdout("Database", "INFO", true)
 
+	if err := checkStoreDir(); err != nil {
+		logger.Errorf("%v", err)
+		os.Exit(1)
+	}
 	// Create directory for database if it doesn't exist
-	if err := os.MkdirAll("store", 0o700); err != nil {
+	if err := os.MkdirAll(storePath(), 0o700); err != nil {
 		logger.Errorf("Failed to create store directory: %v", err)
 		os.Exit(1)
 	}
 	tightenStore()
 	var err error
-	if appSettings, err = loadSettings(settingsPath); err != nil {
+	if appSettings, err = loadSettings(settingsPath()); err != nil {
 		fmt.Printf("FATAL: cannot read the panel settings (%v). Fix or remove the file; refusing to start without them.\n", err)
 		os.Exit(1)
 	}
 
-	container, err := sqlstore.New(context.Background(), "sqlite3", "file:store/whatsapp.db?_foreign_keys=on", dbLog)
+	container, err := sqlstore.New(context.Background(), "sqlite3", storeDSN("whatsapp.db", "_foreign_keys=on"), dbLog)
 	if err != nil {
 		logger.Errorf("Failed to connect to database: %v", err)
 		os.Exit(1)
@@ -4252,15 +4259,15 @@ func main() {
 					qrState.connected = false
 					qrState.Unlock()
 
-					// Also save to disk for convenience: inside store/, readable by this user only.
-					if qrFile, err := filepath.Abs(qrImagePath); err == nil && os.WriteFile(qrFile, pngBytes, 0o600) == nil {
+					// Also save to disk for convenience: inside the store, readable by this user only.
+					if qrFile, err := filepath.Abs(qrImagePath()); err == nil && os.WriteFile(qrFile, pngBytes, 0o600) == nil {
 						fmt.Printf("\nQR also saved as image: %s\n", qrFile)
 						// #nosec G204 -- opens the QR image the bridge itself just wrote
 						_ = exec.Command("open", qrFile).Start()
 					}
 				}
 			} else if evt.Event == "success" {
-				os.Remove(qrImagePath)
+				os.Remove(qrImagePath())
 				pairedAtUnix.Store(time.Now().Unix())
 				clearLoggedOut()
 				qrState.Lock()
@@ -4606,6 +4613,12 @@ var sweepOnce sync.Once
 // prevents overlapping runs if a sweep outlasts the interval (e.g. a backlog
 // after downtime).
 func startTranscriptionSweep(interval time.Duration) {
+	// transcribe.py runs from its own folder, so it gets the store as an absolute path.
+	storeDir, err := filepath.Abs(storePath())
+	if err != nil {
+		fmt.Printf("transcription sweep disabled: %v\n", err)
+		return
+	}
 	pyDir, err := filepath.Abs("../whatsapp-mcp-server")
 	if err != nil {
 		fmt.Printf("transcription sweep disabled: %v\n", err)
@@ -4658,7 +4671,7 @@ func startTranscriptionSweep(interval time.Duration) {
 			// BIND_ADDR (e.g. a Tailscale IP) — ListenAndServe only accepts
 			// connections on the address it was given. A pre-set
 			// WHATSAPP_API_BASE_URL wins.
-			cmd.Env = os.Environ()
+			cmd.Env = append(os.Environ(), "WHATSAPP_STORE_DIR="+storeDir)
 			if os.Getenv("WHATSAPP_API_BASE_URL") == "" {
 				port := "8080"
 				if p := os.Getenv("WHATSAPP_BRIDGE_PORT"); p != "" {

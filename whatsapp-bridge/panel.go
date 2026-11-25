@@ -34,7 +34,6 @@ const (
 	loginWindow      = 15 * time.Minute
 	diagnoseTimeout  = 5 * time.Second
 	diagnoseInterval = 10 * time.Second
-	loggedOutMarker  = "store/logged_out"
 )
 
 // Stamped from the event loop and the HTTP middleware, read by /status.
@@ -74,10 +73,10 @@ func stampAPIAccess(next http.Handler) http.Handler {
 }
 
 // The marker survives the restart that follows a logout, so the next run can say why a QR is back.
-func markLoggedOut()  { os.WriteFile(loggedOutMarker, nil, 0o600) }
-func clearLoggedOut() { os.Remove(loggedOutMarker) }
+func markLoggedOut()  { os.WriteFile(loggedOutMarker(), nil, 0o600) }
+func clearLoggedOut() { os.Remove(loggedOutMarker()) }
 func loggedOutAt() time.Time {
-	if fi, err := os.Stat(loggedOutMarker); err == nil {
+	if fi, err := os.Stat(loggedOutMarker()); err == nil {
 		return fi.ModTime()
 	}
 	return time.Time{}

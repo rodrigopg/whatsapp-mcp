@@ -58,6 +58,20 @@ It connects to your **personal WhatsApp account** directly via the WhatsApp web 
 - **Limits on files sent by path** — `send_file` and `send_audio_message` take a path on the bridge's machine, and the client asking may be an AI that just read an untrusted message. By default the bridge sends a file only from three places: your **Downloads** folder (`~/Downloads`, or the folder named in `user-dirs.dirs` on Linux), the **temp folder** (the system one, plus `/tmp` on macOS and Linux; this is where converted and synthesized audio is written) and the **media it downloaded** (`store/<chat>/<file>`, so forwarding a received file works). Everything else is refused with a message that names `MEDIA_ALLOWED_ROOTS`; inside the default folders, hidden names (starting with `.`) are refused too. Symlinks are resolved before the check, the file is then opened without following any link and checked again on the open file, only regular files up to 100 MB are sent, and a refusal tells the caller the reason, not a path. To send from other folders, set `MEDIA_ALLOWED_ROOTS` to the folders you choose: it replaces the default list (include the temp folder if you use `send_voice_message`, or `send_audio_message` with files that are not Ogg) and lets you opt a hidden folder in. The session and message databases in `store/` stay off limits either way.
 - **Private data folder** — `store/` and its chat folders are created `0700` and files `0600`; folders and files left wider by an older version are tightened at startup.
 
+Set `WHATSAPP_STORE_DIR` to keep the session, message database, panel settings, downloaded media and pairing QR outside the checkout. An unset or empty value keeps the existing `whatsapp-bridge/store/` layout when the bridge runs from `whatsapp-bridge/`. Nonempty values must be absolute paths in both Go and Python; relative paths and literal `~` are rejected. For example: `export WHATSAPP_STORE_DIR="$HOME/.local/share/whatsapp-mcp-store"`. Set the same value for the bridge and for the scripts you run by hand (`transcribe.py`, `recover_audios.py`, `clone_voice.py`); the MCP server talks to the bridge over HTTP and does not need it. The bridge passes its absolute store path to the transcription sweep. `clone_voice.py` uses it by default; `--store` overrides it. The media send restrictions above apply to the configured store too.
+
+To move an existing store, stop the bridge first and **back up the entire store directory**, including `messages.db`, `whatsapp.db`, their SQLite sidecars and media. Move the whole directory to the new path, then start the bridge with `WHATSAPP_STORE_DIR` set. Do not run two bridges against the same store. For example, from the installation directory, after stopping the bridge and taking a backup:
+
+```bash
+export WHATSAPP_STORE_DIR="$HOME/.local/share/whatsapp-mcp-store"
+mkdir -p "$(dirname "$WHATSAPP_STORE_DIR")"
+# The destination must not already exist.
+mv whatsapp-bridge/store "$WHATSAPP_STORE_DIR"
+WHATSAPP_STORE_DIR="$WHATSAPP_STORE_DIR" ./install.sh --service
+```
+
+`install.sh` converts relative paths from the installation's `whatsapp-bridge/` directory to absolute paths and saves the value in `start-bridge.sh`, used by both launchd and systemd. Reinstalling without `WHATSAPP_STORE_DIR` preserves the launcher's saved value; an explicitly empty value selects the default store. If the destination is empty or absent and the previous store exists, the installer prints stop/move steps, leaves the launcher unchanged and skips service startup. After backing up and moving the store, rerun the installer with the destination set to update the launcher. It never moves a session automatically. Docker Compose keeps its store at `/app/whatsapp-bridge/store`, backed by `./data`; host `WHATSAPP_STORE_DIR` values do not change that mount.
+
 ### Contact name resolution (LID migration)
 WhatsApp has been migrating contacts from phone-based JIDs (`+55...@s.whatsapp.net`) to internal LID JIDs (`xxx@lid`) for privacy. This broke contact search, `get_direct_chat_by_contact`, and `list_messages` in the upstream. Fixed with:
 - `resolvePhoneToJIDs` (Go bridge) — looks up all JID variants (PN + LID) for a phone number via `whatsapp.db`, exposed to the MCP server through `POST /api/chat/by_contact`
@@ -169,6 +183,7 @@ The voice model is never part of this repo. For Brazilian Portuguese, [`rhasspy/
 - `BIND_ADDR` env var — change the bind address of the REST API (see [Security](#security) above for the auth requirement this triggers)
 - `API_AUTH_TOKEN` env var (bridge) — bearer token required on all `/api/*` requests once `BIND_ADDR` is non-loopback
 - `API_ALLOWED_HOSTS` env var (bridge) — only for a bridge running without `API_AUTH_TOKEN`: extra host names (comma separated, no port) accepted in the `Host` header of `/api/*` requests, when a local client reaches the bridge through a name other than `localhost`, `127.0.0.1` or `[::1]` (a local reverse proxy, for example)
+- `WHATSAPP_STORE_DIR` env var (bridge and scripts) — absolute path of the bridge's data folder (session, messages, media); unset keeps `whatsapp-bridge/store/` (see [Security](#security) above)
 - `MEDIA_ALLOWED_ROOTS` env var (bridge) — folders (separated by `:`, or `;` on Windows) that files sent with `send_file` / `send_audio_message` must be inside; unset, files are sent only from the Downloads folder, the temp folder and downloaded media (see [Security](#security) above)
 - Transcription env vars — see [Audio transcription](#audio-transcription-opt-in) above
 - `WEBHOOK_URL` / `WEBHOOK_SECRET` env vars — opt-in outbound webhooks, see [Webhooks](#webhooks-opt-in) below

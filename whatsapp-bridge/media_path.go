@@ -14,14 +14,11 @@ import (
 // maxMediaBytes caps a file sent through media_path; the whole file is held in memory to upload.
 const maxMediaBytes = 100 << 20
 
-// qrImagePath is the pairing QR saved for convenience while pairing; removed once paired.
-const qrImagePath = "store/whatsapp-qr.png"
-
 // storeParts reports whether resolved lies inside the bridge's store directory and, if so, its
 // path components below it. Directories are compared by identity (os.SameFile), not by name, so
 // a different spelling of the same folder on a case-insensitive filesystem does not slip through.
 func storeParts(resolved string) (parts []string, inside bool) {
-	store, err := os.Stat("store")
+	store, err := os.Stat(storePath())
 	if err != nil {
 		return nil, false
 	}
@@ -86,7 +83,7 @@ var defaultMediaRoots = func() []string {
 // bridge's store from an outer base is refused as well, and so are hidden names unless hiddenOK.
 func openNoLinks(base string, parts []string, hiddenOK bool) (*os.File, error) {
 	const changed = mediaRefusal("the path changed while it was being read")
-	store, storeErr := os.Stat("store")
+	store, storeErr := os.Stat(storePath())
 	dir, err := os.OpenRoot(base)
 	if err != nil {
 		return nil, err
@@ -177,7 +174,7 @@ func readCheckedMedia(path string) ([]byte, error) {
 		if len(parts) != 2 || !strings.Contains(parts[0], "@") {
 			return nil, mediaRefusal("files inside the bridge store cannot be sent, except downloaded media")
 		}
-		f, err = openNoLinks("store", parts, true)
+		f, err = openNoLinks(storePath(), parts, true)
 	} else {
 		roots, outside := filepath.SplitList(os.Getenv("MEDIA_ALLOWED_ROOTS")), mediaRefusal("path is outside MEDIA_ALLOWED_ROOTS")
 		configured := len(roots) > 0
@@ -218,7 +215,7 @@ func readCheckedMedia(path string) ([]byte, error) {
 // including what an older version created with wider modes. It holds the session keys, the
 // message history and downloaded media.
 func tightenStore() {
-	root, err := filepath.EvalSymlinks("store")
+	root, err := filepath.EvalSymlinks(storePath())
 	if err != nil {
 		return
 	}

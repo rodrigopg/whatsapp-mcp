@@ -32,13 +32,15 @@ from datetime import datetime, timedelta, timezone
 
 import requests
 
+from store_paths import STORE_DIR
+
 # WhatsApp purges undelivered media from its CDN after roughly 2-3 weeks. Past
 # this age a CDN download failure is permanent (the media may still be
 # recoverable from the phone via recover_audios.py); before it, treat the
 # failure as transient and let the next sweep retry.
 CDN_EXPIRY = timedelta(days=21)
 
-DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'whatsapp-bridge', 'store', 'messages.db')
+DB_PATH = str(STORE_DIR / "messages.db")
 API_BASE = os.environ.get("WHATSAPP_API_BASE_URL", f"http://localhost:{os.environ.get('WHATSAPP_BRIDGE_PORT') or '8080'}/api")
 WHATSAPP_API_AUTH_TOKEN = os.environ.get("WHATSAPP_API_AUTH_TOKEN", "")
 

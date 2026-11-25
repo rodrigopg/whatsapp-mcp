@@ -20,7 +20,6 @@ import (
 )
 
 const (
-	settingsPath      = "store/settings.json"
 	defaultStallHours = 6
 	unpairWord        = "DESCONECTAR"
 )
