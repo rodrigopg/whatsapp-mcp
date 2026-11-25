@@ -62,6 +62,8 @@ try:
     TRANSCRIPTION_TIMEOUT = int(os.environ.get("TRANSCRIPTION_TIMEOUT", "600"))
 except ValueError:
     TRANSCRIPTION_TIMEOUT = 600
+if TRANSCRIPTION_TIMEOUT <= 0:  # subprocess rejects 0 or less; fall back instead of failing every audio
+    TRANSCRIPTION_TIMEOUT = 600
 DECODING_OPTS = ["--temperature", "0", "--no-fallback", "--max-context", "0", "--split-on-word"]
 
 # API backend (OpenAI Whisper, or any OpenAI-compatible endpoint such as Groq).

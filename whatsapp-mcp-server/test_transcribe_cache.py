@@ -238,5 +238,14 @@ class TranscriptionTimeoutTest(unittest.TestCase):
                 self.assertEqual(result.stdout.strip(), expected)
 
 
+class TranscriptionTimeoutSetting(unittest.TestCase):
+    def test_invalid_or_non_positive_values_fall_back(self):
+        import importlib
+        for raw, want in (("30", 30), ("0", 600), ("-5", 600), ("abc", 600)):
+            with self.subTest(raw=raw), patch.dict(os.environ, {"TRANSCRIPTION_TIMEOUT": raw}):
+                self.assertEqual(importlib.reload(transcribe).TRANSCRIPTION_TIMEOUT, want)
+        importlib.reload(transcribe)
+
+
 if __name__ == "__main__":
     unittest.main()
