@@ -136,7 +136,7 @@ func markChatRead(client readStateClient, db *sql.DB, chat, sender types.JID, id
 	ctx := context.Background()
 	if len(ids) > 0 {
 		if err := client.MarkRead(ctx, ids, at, chat, sender); err != nil {
-			return err
+			return fmt.Errorf("MarkRead error: %w", err)
 		}
 		// The receipt already succeeded even if the following app-state patch fails.
 		if err := markMessagesRead(db, localChat, ids); err != nil {
@@ -144,7 +144,7 @@ func markChatRead(client readStateClient, db *sql.DB, chat, sender types.JID, id
 		}
 	}
 	if err := safeSendAppState(client, ctx, appstate.BuildMarkChatAsRead(chat, true, at, nil)); err != nil {
-		return err
+		return fmt.Errorf("AppState error: %w", err)
 	}
 	return setChatReadState(db, localChat, true, at)
 }

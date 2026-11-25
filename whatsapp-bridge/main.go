@@ -3678,7 +3678,9 @@ img{border:8px solid white;border-radius:8px;box-shadow:0 4px 20px rgba(0,0,0,.2
 		}
 		localChat := resolveToPN(client, chatJID).String()
 		if err := markChatRead(client, messageStore.db, chatJID, senderJID, req.MessageIDs, ts, localChat); err != nil {
-			writeJSONError(w, http.StatusInternalServerError, fmt.Sprintf("Mark read failed: %v", err))
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusInternalServerError)
+			json.NewEncoder(w).Encode(MarkChatResponse{Success: false, Message: err.Error()})
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -3715,7 +3717,9 @@ img{border:8px solid white;border-radius:8px;box-shadow:0 4px 20px rgba(0,0,0,.2
 			return
 		}
 		if err := setChatReadState(messageStore.db, resolveToPN(client, chatJID).String(), false, time.Time{}); err != nil {
-			writeJSONError(w, http.StatusInternalServerError, fmt.Sprintf("Local unread state failed: %v", err))
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusInternalServerError)
+			json.NewEncoder(w).Encode(MarkChatResponse{Success: false, Message: fmt.Sprintf("Local unread state error: %v", err)})
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
