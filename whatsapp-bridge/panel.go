@@ -195,15 +195,25 @@ type loginFails struct {
 }
 
 // clientKey names who is typing keys: the peer address, or its /64 for IPv6 (one network holds all
-// of those). Behind a reverse proxy every visitor has the proxy's address and shares one count.
-func clientKey(remoteAddr string) string {
-	host, _, err := net.SplitHostPort(remoteAddr)
+// of those). When the peer is this machine itself (a reverse proxy or tunnel in front of the
+// bridge), the last X-Forwarded-For entry is used: that is the one the proxy added, whatever the
+// visitor sent before it. The header is ignored from any other peer, which could write anything
+// there to dodge the count. A proxy on another host, or one that does not forward the address,
+// leaves every visitor sharing one count.
+func clientKey(r *http.Request) string {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
-		host = remoteAddr
+		host = r.RemoteAddr
 	}
 	addr, err := netip.ParseAddr(host)
 	if err != nil {
 		return host
+	}
+	if addr.Unmap().IsLoopback() {
+		hops := strings.Split(strings.Join(r.Header.Values("X-Forwarded-For"), ","), ",")
+		if fwd, err := netip.ParseAddr(strings.TrimSpace(hops[len(hops)-1])); err == nil {
+			addr = fwd
+		}
 	}
 	if addr = addr.Unmap().WithZone(""); addr.Is6() {
 		if p, err := addr.Prefix(64); err == nil {
@@ -352,7 +362,7 @@ func (p *panel) login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, panelMaxBody)
-	key, who := r.FormValue("key"), clientKey(r.RemoteAddr)
+	key, who := r.FormValue("key"), clientKey(r)
 	p.mu.Lock()
 	now := p.now()
 	for k, f := range p.fails {

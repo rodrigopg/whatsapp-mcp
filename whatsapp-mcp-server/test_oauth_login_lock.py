@@ -40,6 +40,18 @@ class LoginLockPerClient(unittest.TestCase):
         self.assertLessEqual(len(self.provider._fails), MAX_CLIENTS + 1)
 
 
+class ForwardedAddressTrust(unittest.TestCase):
+    def test_the_server_takes_a_forwarded_address_only_from_a_proxy_on_this_machine(self):
+        """request.client is what the lock counts: uvicorn rewrites it from X-Forwarded-For for loopback peers only."""
+        from unittest.mock import patch
+        from uvicorn.config import Config
+        with patch.dict(os.environ):
+            os.environ.pop("FORWARDED_ALLOW_IPS", None)
+            config = Config(app=None)
+        self.assertTrue(config.proxy_headers)
+        self.assertEqual({h.strip() for h in config.forwarded_allow_ips.split(",")}, {"127.0.0.1", "::1"})
+
+
 class LoginRouteUsesTheClientAddress(unittest.IsolatedAsyncioTestCase):
     async def test_the_lock_is_asked_for_the_requesting_address(self):
         routes = {}

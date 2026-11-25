@@ -45,6 +45,39 @@ func TestPanelLoginLockIsPerClient(t *testing.T) {
 	}
 }
 
+// Behind a proxy on this machine the visitor is the last X-Forwarded-For entry (the proxy's own);
+// from any other peer the header is ignored, or it would be a way around the lock.
+func TestPanelLoginLockBehindALocalProxy(t *testing.T) {
+	_, _, mux := testPanel("secret-token", statusInfo{Connected: true})
+	via := func(remote, fwd, key string) int {
+		r := httptest.NewRequest("POST", "/status/login", strings.NewReader("key="+key))
+		r.Host, r.RemoteAddr = "wa.example.test", remote
+		r.Header.Set("Origin", "https://wa.example.test")
+		r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		r.Header.Set("X-Forwarded-For", fwd)
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, r)
+		return w.Code
+	}
+	// The visitor rotates what it sends; the proxy always appends the real address.
+	for i := 0; i < loginMaxFails; i++ {
+		via("127.0.0.1:5000", "198.51.100."+strconv.Itoa(i)+", 203.0.113.7", "nope")
+	}
+	if code := via("[::1]:5000", "1.2.3.4, 203.0.113.7", "secret-token"); code != http.StatusTooManyRequests {
+		t.Errorf("guessing visitor behind the proxy = %d, want 429", code)
+	}
+	if code := via("127.0.0.1:5000", "203.0.113.8", "secret-token"); code != http.StatusSeeOther {
+		t.Errorf("another visitor behind the proxy = %d, want signed in", code)
+	}
+	// A direct client cannot pick its own identity with the header.
+	for i := 0; i < loginMaxFails; i++ {
+		via("192.0.2.44:5000", "198.51.100."+strconv.Itoa(i), "nope")
+	}
+	if code := via("192.0.2.44:5000", "198.51.100.200", "secret-token"); code != http.StatusTooManyRequests {
+		t.Errorf("direct client rotating X-Forwarded-For = %d, want 429", code)
+	}
+}
+
 // The table of clients is bounded: past the cap, new addresses share one counter.
 func TestPanelLoginLockTableIsBounded(t *testing.T) {
 	p, _, mux := testPanel("secret-token", statusInfo{Connected: true})
