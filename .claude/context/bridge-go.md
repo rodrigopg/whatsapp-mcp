@@ -40,6 +40,9 @@ Bridge Go (`whatsapp-bridge/main.go`) — conecta ao WhatsApp via whatsmeow, exp
 ## Captura de conteúdo
 
 - `extractTextContent` retorna captions de image/video/document (`GetCaption()`). Bug original: caption era dropado na escrita → busca não achava texto que existia. Caminho live e caminho de history-sync compartilham a função (antes o sync tinha extractor inline duplicado com o mesmo bug).
+- `StoreMessage` updates an existing row only for the same author (same `is_from_me`; for others' messages the same `sender`, the bare LID user counts as its LID JID, an empty sender on either side passes). Message IDs are chosen by the sender, so a reused ID from someone else is ignored and logged. Same rule as `ApplyEdit`.
+- `storeMentions` writes one transaction, deduped, at most `maxStoredMentions` per message.
+- The review cursor never passes now: `reviewMark` clamps `up_to`, and `reviewCursor` rewrites a stored future value to now on the first read.
 - Mensagens enviadas são persistidas localmente na hora (echo multi-device não dispara em conta single-device).
 
 ## History sync
