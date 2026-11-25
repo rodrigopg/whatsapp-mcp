@@ -123,6 +123,12 @@ func handlePollVote(client *whatsmeow.Client, store *MessageStore) http.HandlerF
 			writeJSONError(w, http.StatusInternalServerError, fmt.Sprintf("BuildPollVote error: %v", err))
 			return
 		}
+		done, err := beginOutbound(r.Context(), store, outboundChatJIDs(r.Context(), client, chatJID)...)
+		if err != nil {
+			writeActionError(w, err)
+			return
+		}
+		defer done()
 		resp, err := client.SendMessage(ctx, chatJID, msg)
 		if err != nil {
 			writeJSONError(w, http.StatusInternalServerError, fmt.Sprintf("SendMessage error: %v", err))

@@ -166,12 +166,16 @@ The voice model is never part of this repo. For Brazilian Portuguese, [`rhasspy/
 - `WHATSAPP_BRIDGE_PORT` env var — change the REST API port (default `8080`)
 - `WHATSAPP_API_BASE_URL` env var — point the Python MCP server at a non-default bridge URL
 - `WHATSAPP_API_AUTH_TOKEN` env var — bearer token the MCP server sends as `Authorization: Bearer <token>`; required if the bridge's `API_AUTH_TOKEN` is set
+- `WHATSAPP_SEND_INTERVAL_MS` (bridge, default `250`) sets the minimum gap in milliseconds between recipient-visible outbound actions across all chats. `0` disables this gap.
+- `WHATSAPP_FIRST_CONTACT_INTERVAL_MS` (bridge, default `30000`) adds a stricter gap between actions in chats with no messages in local history. `0` disables this extra gap. New groups and joins by invite also use it. Invalid or negative interval values stop startup.
 - `BIND_ADDR` env var — change the bind address of the REST API (see [Security](#security) above for the auth requirement this triggers)
 - `API_AUTH_TOKEN` env var (bridge) — bearer token required on all `/api/*` requests once `BIND_ADDR` is non-loopback
 - `API_ALLOWED_HOSTS` env var (bridge) — only for a bridge running without `API_AUTH_TOKEN`: extra host names (comma separated, no port) accepted in the `Host` header of `/api/*` requests, when a local client reaches the bridge through a name other than `localhost`, `127.0.0.1` or `[::1]` (a local reverse proxy, for example)
 - `MEDIA_ALLOWED_ROOTS` env var (bridge) — folders (separated by `:`, or `;` on Windows) that files sent with `send_file` / `send_audio_message` must be inside; unset, files are sent only from the Downloads folder, the temp folder and downloaded media (see [Security](#security) above)
 - Transcription env vars — see [Audio transcription](#audio-transcription-opt-in) above
 - `WEBHOOK_URL` / `WEBHOOK_SECRET` env vars — opt-in outbound webhooks, see [Webhooks](#webhooks-opt-in) below
+
+Text, media, voice, polls and votes, contact cards, reactions, edits, revokes and group changes share one process-wide sending queue. The default 250 ms gap keeps sequential replies to an established chat responsive. Read receipts, presence and app-state operations do not enter this queue. Each request waits up to 10 seconds; when the next slot is further away, the bridge returns HTTP 429 with a `Retry-After` header in seconds. Cancelling a request removes it from the queue. MCP tools report the rate limit without retrying automatically. The intervals reset on bridge restart; they reduce bursts but cannot guarantee protection from a WhatsApp ban.
 
 ### Webhooks (opt-in)
 

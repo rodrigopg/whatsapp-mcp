@@ -247,7 +247,13 @@ func handlePoll(client *whatsmeow.Client, store *MessageStore) http.HandlerFunc 
 			return
 		}
 		question := strings.TrimSpace(req.Question)
-		resp, err := client.SendMessage(context.Background(), chatJID, client.BuildPollCreation(question, options, selectable))
+		done, err := beginOutbound(r.Context(), store, outboundChatJIDs(r.Context(), client, chatJID)...)
+		if err != nil {
+			writeActionError(w, err)
+			return
+		}
+		defer done()
+		resp, err := client.SendMessage(context.WithoutCancel(r.Context()), chatJID, client.BuildPollCreation(question, options, selectable))
 		if err != nil {
 			writeJSONError(w, http.StatusInternalServerError, fmt.Sprintf("SendMessage error: %v", err))
 			return

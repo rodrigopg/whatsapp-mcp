@@ -459,9 +459,9 @@ type SendMessageRequest struct {
 }
 
 // Function to send a WhatsApp message
-func sendWhatsAppMessage(client *whatsmeow.Client, messageStore *MessageStore, recipient string, message string, mediaPath string, replyTo string, mentions []string) (bool, string) {
+func sendWhatsAppMessage(ctx context.Context, client *whatsmeow.Client, messageStore *MessageStore, recipient string, message string, mediaPath string, replyTo string, mentions []string) (string, error) {
 	if !client.IsConnected() {
-		return false, "Not connected to WhatsApp"
+		return "", errors.New("Not connected to WhatsApp")
 	}
 
 	// Create JID for recipient
@@ -475,7 +475,7 @@ func sendWhatsAppMessage(client *whatsmeow.Client, messageStore *MessageStore, r
 		// Parse the JID string
 		recipientJID, err = types.ParseJID(recipient)
 		if err != nil {
-			return false, fmt.Sprintf("Error parsing JID: %v", err)
+			return "", fmt.Errorf("Error parsing JID: %v", err)
 		}
 	} else {
 		// Create JID from phone number
@@ -492,7 +492,7 @@ func sendWhatsAppMessage(client *whatsmeow.Client, messageStore *MessageStore, r
 		// Read media file
 		mediaData, err := readOutboundMedia(mediaPath)
 		if err != nil {
-			return false, fmt.Sprintf("Error reading media file: %v", err)
+			return "", fmt.Errorf("Error reading media file: %v", err)
 		}
 
 		// Determine media type and mime type based on file extension
@@ -543,9 +543,9 @@ func sendWhatsAppMessage(client *whatsmeow.Client, messageStore *MessageStore, r
 		}
 
 		// Upload media to WhatsApp servers
-		resp, err := client.Upload(context.Background(), mediaData, mediaType)
+		resp, err := client.Upload(ctx, mediaData, mediaType)
 		if err != nil {
-			return false, fmt.Sprintf("Error uploading media: %v", err)
+			return "", fmt.Errorf("Error uploading media: %v", err)
 		}
 
 		fmt.Println("Media uploaded", resp)
@@ -575,7 +575,7 @@ func sendWhatsAppMessage(client *whatsmeow.Client, messageStore *MessageStore, r
 					seconds = analyzedSeconds
 					waveform = analyzedWaveform
 				} else {
-					return false, fmt.Sprintf("Failed to analyze Ogg Opus file: %v", err)
+					return "", fmt.Errorf("Failed to analyze Ogg Opus file: %v", err)
 				}
 			} else {
 				fmt.Printf("Not an Ogg Opus file: %s\n", mimeType)
@@ -622,7 +622,7 @@ func sendWhatsAppMessage(client *whatsmeow.Client, messageStore *MessageStore, r
 	} else if replyTo != "" {
 		msg, err = quotedReply(messageStore, resolveToPN(client, recipientJID).String(), recipientJID.String(), replyTo, message)
 		if err != nil {
-			return false, err.Error()
+			return "", err
 		}
 	} else {
 		msg.Conversation = proto.String(message)
@@ -630,15 +630,20 @@ func sendWhatsAppMessage(client *whatsmeow.Client, messageStore *MessageStore, r
 
 	if len(mentions) > 0 {
 		if err := withMentions(msg, message, mentions); err != nil {
-			return false, err.Error()
+			return "", err
 		}
 	}
 
-	// Send message
-	resp, err := client.SendMessage(context.Background(), recipientJID, msg)
+	done, err := beginOutbound(ctx, messageStore, outboundChatJIDs(ctx, client, recipientJID)...)
+	if err != nil {
+		return "", err
+	}
+	defer done()
+
+	resp, err := client.SendMessage(context.WithoutCancel(ctx), recipientJID, msg)
 
 	if err != nil {
-		return false, fmt.Sprintf("Error sending message: %v", err)
+		return "", fmt.Errorf("Error sending message: %v", err)
 	}
 
 	// Persist outbounds (text and media) so own-sends appear in the local store.
@@ -648,7 +653,7 @@ func sendWhatsAppMessage(client *whatsmeow.Client, messageStore *MessageStore, r
 		persistOutbound(messageStore, resolveToPN(client, recipientJID).String(), client.Store.ID.User, resp.ID, message, resp.Timestamp, msg, mentions)
 	}
 
-	return true, fmt.Sprintf("Message sent to %s", recipient)
+	return fmt.Sprintf("Message sent to %s", recipient), nil
 }
 
 // persistOutbound writes a message we just sent (text or media) to the local
@@ -1119,7 +1124,13 @@ func handleReact(client messageActionClient, messageStore *MessageStore) http.Ha
 			}
 		}
 		builtMsg := client.BuildReaction(chatJID, senderJID, types.MessageID(req.MessageID), req.Emoji)
-		if _, err := client.SendMessage(context.Background(), chatJID, builtMsg); err != nil {
+		done, err := beginOutbound(r.Context(), messageStore, client.OutboundChatJIDs(r.Context(), chatJID)...)
+		if err != nil {
+			writeActionError(w, err)
+			return
+		}
+		defer done()
+		if _, err := client.SendMessage(context.WithoutCancel(r.Context()), chatJID, builtMsg); err != nil {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusInternalServerError)
 			json.NewEncoder(w).Encode(MarkChatResponse{Success: false, Message: fmt.Sprintf("SendMessage error: %v", err)})
@@ -1189,7 +1200,13 @@ func handleEdit(client *whatsmeow.Client, messageStore *MessageStore) http.Handl
 		}
 		newContent := &waProto.Message{Conversation: proto.String(req.NewText)}
 		builtMsg := client.BuildEdit(chatJID, types.MessageID(req.MessageID), newContent)
-		if _, err := client.SendMessage(context.Background(), chatJID, builtMsg); err != nil {
+		done, err := beginOutbound(r.Context(), messageStore, outboundChatJIDs(r.Context(), client, chatJID)...)
+		if err != nil {
+			writeActionError(w, err)
+			return
+		}
+		defer done()
+		if _, err := client.SendMessage(context.WithoutCancel(r.Context()), chatJID, builtMsg); err != nil {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusInternalServerError)
 			json.NewEncoder(w).Encode(MarkChatResponse{Success: false, Message: fmt.Sprintf("SendMessage error: %v", err)})
@@ -1240,7 +1257,13 @@ func handleRevoke(client messageActionClient, messageStore *MessageStore) http.H
 			}
 		}
 		builtMsg := client.BuildRevoke(chatJID, senderJID, types.MessageID(req.MessageID))
-		if _, err := client.SendMessage(context.Background(), chatJID, builtMsg); err != nil {
+		done, err := beginOutbound(r.Context(), messageStore, client.OutboundChatJIDs(r.Context(), chatJID)...)
+		if err != nil {
+			writeActionError(w, err)
+			return
+		}
+		defer done()
+		if _, err := client.SendMessage(context.WithoutCancel(r.Context()), chatJID, builtMsg); err != nil {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusInternalServerError)
 			json.NewEncoder(w).Encode(MarkChatResponse{Success: false, Message: fmt.Sprintf("SendMessage error: %v", err)})
@@ -1329,7 +1352,7 @@ func parseGroupParticipantJIDs(participants []string) ([]types.JID, error) {
 }
 
 // handleGroupParticipants returns the handler for POST /api/group_participants.
-func handleGroupParticipants(client *whatsmeow.Client) http.HandlerFunc {
+func handleGroupParticipants(client *whatsmeow.Client, messageStore *MessageStore) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -1361,6 +1384,12 @@ func handleGroupParticipants(client *whatsmeow.Client) http.HandlerFunc {
 			json.NewEncoder(w).Encode(GroupParticipantsResponse{Success: false, Message: "WhatsApp client not connected"})
 			return
 		}
+		done, err := beginOutbound(r.Context(), messageStore, groupJID)
+		if err != nil {
+			writeActionError(w, err)
+			return
+		}
+		defer done()
 		results, err := client.UpdateGroupParticipants(r.Context(), groupJID, participantJIDs, action)
 		if err != nil {
 			w.Header().Set("Content-Type", "application/json")
@@ -1390,10 +1419,11 @@ func handleGroupParticipants(client *whatsmeow.Client) http.HandlerFunc {
 // Link carries a secret invite link: it is only ever returned to the caller,
 // never logged.
 type GroupActionResponse struct {
-	Success bool   `json:"success"`
-	Message string `json:"message"`
-	Link    string `json:"link,omitempty"`
-	JID     string `json:"jid,omitempty"`
+	Success bool     `json:"success"`
+	Message string   `json:"message"`
+	Link    string   `json:"link,omitempty"`
+	JID     string   `json:"jid,omitempty"`
+	Applied []string `json:"applied,omitempty"`
 }
 
 const maxGroupTopicRunes = 2048
@@ -1462,7 +1492,7 @@ func writeGroupAction(w http.ResponseWriter, status int, resp GroupActionRespons
 }
 
 // groupClientReady writes a 503 and returns false when the client is offline.
-func groupClientReady(w http.ResponseWriter, client *whatsmeow.Client) bool {
+func groupClientReady(w http.ResponseWriter, client interface{ IsConnected() bool }) bool {
 	if client == nil || !client.IsConnected() {
 		writeGroupAction(w, http.StatusServiceUnavailable, GroupActionResponse{Message: "WhatsApp client not connected"})
 		return false
@@ -1473,7 +1503,7 @@ func groupClientReady(w http.ResponseWriter, client *whatsmeow.Client) bool {
 // handleGroupInvite returns the handler for GET /api/group_invite (fetch the
 // current link) and, with reset=true, POST /api/group_invite_reset (revoke the
 // old link and return a new one).
-func handleGroupInvite(client *whatsmeow.Client, reset bool) http.HandlerFunc {
+func handleGroupInvite(client *whatsmeow.Client, messageStore *MessageStore, reset bool) http.HandlerFunc {
 	method := http.MethodGet
 	if reset {
 		method = http.MethodPost
@@ -1504,6 +1534,14 @@ func handleGroupInvite(client *whatsmeow.Client, reset bool) http.HandlerFunc {
 		if !groupClientReady(w, client) {
 			return
 		}
+		if reset {
+			done, err := beginOutbound(r.Context(), messageStore, groupJID)
+			if err != nil {
+				writeActionError(w, err)
+				return
+			}
+			defer done()
+		}
 		link, err := client.GetGroupInviteLink(r.Context(), groupJID, reset)
 		if err != nil {
 			writeGroupAction(w, http.StatusInternalServerError, GroupActionResponse{Message: fmt.Sprintf("GetGroupInviteLink error: %v", err)})
@@ -1514,7 +1552,7 @@ func handleGroupInvite(client *whatsmeow.Client, reset bool) http.HandlerFunc {
 }
 
 // handleGroupJoin returns the handler for POST /api/group_join.
-func handleGroupJoin(client *whatsmeow.Client) http.HandlerFunc {
+func handleGroupJoin(client *whatsmeow.Client, messageStore *MessageStore) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -1535,6 +1573,12 @@ func handleGroupJoin(client *whatsmeow.Client) http.HandlerFunc {
 		if !groupClientReady(w, client) {
 			return
 		}
+		done, err := beginOutbound(r.Context(), messageStore, types.EmptyJID)
+		if err != nil {
+			writeActionError(w, err)
+			return
+		}
+		defer done()
 		jid, err := client.JoinGroupWithLink(r.Context(), code)
 		if err != nil {
 			writeGroupAction(w, http.StatusInternalServerError, GroupActionResponse{Message: fmt.Sprintf("JoinGroupWithLink error: %v", err)})
@@ -1544,10 +1588,18 @@ func handleGroupJoin(client *whatsmeow.Client) http.HandlerFunc {
 	}
 }
 
+type groupSettingsClient interface {
+	IsConnected() bool
+	SetGroupName(context.Context, types.JID, string) error
+	SetGroupTopic(context.Context, types.JID, string, string, string) error
+	SetGroupAnnounce(context.Context, types.JID, bool) error
+	SetGroupLocked(context.Context, types.JID, bool) error
+}
+
 // handleGroupSettings returns the handler for POST /api/group_settings.
 // Settings are applied in order name, topic, announce, locked; on the first
 // failure the response says what was already applied.
-func handleGroupSettings(client *whatsmeow.Client) http.HandlerFunc {
+func handleGroupSettings(client groupSettingsClient, messageStore *MessageStore) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -1571,6 +1623,8 @@ func handleGroupSettings(client *whatsmeow.Client) http.HandlerFunc {
 			return
 		}
 		ctx := r.Context()
+		waitCtx, cancelWait := context.WithTimeout(ctx, maxSendWait)
+		defer cancelWait()
 		var applied []string
 		steps := []struct {
 			field string
@@ -1586,15 +1640,43 @@ func handleGroupSettings(client *whatsmeow.Client) http.HandlerFunc {
 			if !s.set {
 				continue
 			}
-			if err := s.do(); err != nil {
-				writeGroupAction(w, http.StatusInternalServerError, GroupActionResponse{
-					Message: fmt.Sprintf("Set %s error: %v (applied before failure: %v)", s.field, err, applied),
+			var done func()
+			var err error
+			if len(applied) == 0 {
+				done, err = beginOutbound(waitCtx, messageStore, groupJID)
+			} else {
+				// A compound operation contacts the group once; each action still needs a global slot.
+				done, err = outboundLimiter.acquire(waitCtx, func(context.Context) (bool, error) { return false, nil })
+			}
+			if errors.Is(err, context.DeadlineExceeded) && ctx.Err() == nil {
+				err = &sendRateError{outboundLimiter.retry(len(applied) == 0)}
+			}
+			if err == nil {
+				err = s.do()
+				done()
+			}
+			if err != nil {
+				status := http.StatusInternalServerError
+				var limited *sendRateError
+				if errors.As(err, &limited) {
+					first, checkErr := outboundFirstContact(ctx, messageStore, groupJID)
+					if checkErr != nil {
+						first = true
+					}
+					// A retry is a new request, so an empty group needs first-contact pacing again.
+					limited = &sendRateError{max(limited.retryAfter, outboundLimiter.retry(first))}
+					err = limited
+					status = http.StatusTooManyRequests
+					w.Header().Set("Retry-After", strconv.Itoa(retrySeconds(limited.retryAfter)))
+				}
+				writeGroupAction(w, status, GroupActionResponse{
+					Message: fmt.Sprintf("Set %s error: %v (applied: %s)", s.field, err, strings.Join(applied, ", ")), Applied: applied,
 				})
 				return
 			}
 			applied = append(applied, s.field)
 		}
-		writeGroupAction(w, http.StatusOK, GroupActionResponse{Success: true, Message: fmt.Sprintf("updated: %s", strings.Join(applied, ", "))})
+		writeGroupAction(w, http.StatusOK, GroupActionResponse{Success: true, Message: fmt.Sprintf("updated: %s", strings.Join(applied, ", ")), Applied: applied})
 	}
 }
 
@@ -1877,18 +1959,18 @@ func safeSendAppState(cli *whatsmeow.Client, ctx context.Context, patch appstate
 }
 
 // createWhatsAppGroup creates a new group on WhatsApp.
-func createWhatsAppGroup(client *whatsmeow.Client, messageStore *MessageStore, req CreateGroupRequest) CreateGroupResponse {
+func createWhatsAppGroup(ctx context.Context, client *whatsmeow.Client, messageStore *MessageStore, req CreateGroupRequest) (CreateGroupResponse, error) {
 	if !client.IsConnected() {
-		return CreateGroupResponse{Success: false, Message: "Not connected to WhatsApp"}
+		return CreateGroupResponse{}, errors.New("Not connected to WhatsApp")
 	}
 	if strings.TrimSpace(req.Name) == "" {
-		return CreateGroupResponse{Success: false, Message: "Group name is required"}
+		return CreateGroupResponse{}, errors.New("Group name is required")
 	}
 	if len([]rune(req.Name)) > 25 {
-		return CreateGroupResponse{Success: false, Message: "Group name must be 25 characters or fewer"}
+		return CreateGroupResponse{}, errors.New("Group name must be 25 characters or fewer")
 	}
 	if len(req.Participants) == 0 {
-		return CreateGroupResponse{Success: false, Message: "At least one participant is required"}
+		return CreateGroupResponse{}, errors.New("At least one participant is required")
 	}
 
 	participantJIDs := make([]types.JID, 0, len(req.Participants))
@@ -1902,7 +1984,7 @@ func createWhatsAppGroup(client *whatsmeow.Client, messageStore *MessageStore, r
 		if strings.Contains(p, "@") {
 			jid, err = types.ParseJID(p)
 			if err != nil {
-				return CreateGroupResponse{Success: false, Message: fmt.Sprintf("Invalid participant JID %q: %v", p, err)}
+				return CreateGroupResponse{}, fmt.Errorf("Invalid participant JID %q: %v", p, err)
 			}
 		} else {
 			jid = types.JID{User: strings.TrimPrefix(p, "+"), Server: "s.whatsapp.net"}
@@ -1910,7 +1992,7 @@ func createWhatsAppGroup(client *whatsmeow.Client, messageStore *MessageStore, r
 		participantJIDs = append(participantJIDs, jid)
 	}
 	if len(participantJIDs) == 0 {
-		return CreateGroupResponse{Success: false, Message: "No valid participants after parsing"}
+		return CreateGroupResponse{}, errors.New("No valid participants after parsing")
 	}
 
 	createReq := whatsmeow.ReqCreateGroup{
@@ -1923,14 +2005,19 @@ func createWhatsAppGroup(client *whatsmeow.Client, messageStore *MessageStore, r
 	if req.CommunityParentJID != "" {
 		parentJID, err := types.ParseJID(req.CommunityParentJID)
 		if err != nil {
-			return CreateGroupResponse{Success: false, Message: fmt.Sprintf("Invalid community_parent_jid: %v", err)}
+			return CreateGroupResponse{}, fmt.Errorf("Invalid community_parent_jid: %v", err)
 		}
 		createReq.GroupLinkedParent.LinkedParentJID = parentJID
 	}
 
-	groupInfo, err := client.CreateGroup(context.Background(), createReq)
+	done, err := beginOutbound(ctx, messageStore, types.EmptyJID)
 	if err != nil {
-		return CreateGroupResponse{Success: false, Message: fmt.Sprintf("Error creating group: %v", err)}
+		return CreateGroupResponse{}, err
+	}
+	defer done()
+	groupInfo, err := client.CreateGroup(context.WithoutCancel(ctx), createReq)
+	if err != nil {
+		return CreateGroupResponse{}, fmt.Errorf("Error creating group: %v", err)
 	}
 
 	createdAt := groupInfo.GroupCreated
@@ -1947,29 +2034,34 @@ func createWhatsAppGroup(client *whatsmeow.Client, messageStore *MessageStore, r
 		JID:              groupInfo.JID.String(),
 		Name:             groupInfo.Name,
 		ParticipantCount: len(groupInfo.Participants),
-	}
+	}, nil
 }
 
 // leaveWhatsAppGroup leaves the specified group on WhatsApp.
-func leaveWhatsAppGroup(client *whatsmeow.Client, jidStr string) LeaveGroupResponse {
+func leaveWhatsAppGroup(ctx context.Context, client *whatsmeow.Client, messageStore *MessageStore, jidStr string) (LeaveGroupResponse, error) {
 	if !client.IsConnected() {
-		return LeaveGroupResponse{Success: false, Message: "Not connected to WhatsApp"}
+		return LeaveGroupResponse{}, errors.New("Not connected to WhatsApp")
 	}
 	jidStr = strings.TrimSpace(jidStr)
 	if jidStr == "" {
-		return LeaveGroupResponse{Success: false, Message: "Group JID is required"}
+		return LeaveGroupResponse{}, errors.New("Group JID is required")
 	}
 	jid, err := types.ParseJID(jidStr)
 	if err != nil {
-		return LeaveGroupResponse{Success: false, Message: fmt.Sprintf("Invalid JID: %v", err)}
+		return LeaveGroupResponse{}, fmt.Errorf("Invalid JID: %v", err)
 	}
 	if jid.Server != "g.us" {
-		return LeaveGroupResponse{Success: false, Message: "Only group JIDs (@g.us) can be left"}
+		return LeaveGroupResponse{}, errors.New("Only group JIDs (@g.us) can be left")
 	}
-	if err := client.LeaveGroup(context.Background(), jid); err != nil {
-		return LeaveGroupResponse{Success: false, Message: fmt.Sprintf("Error leaving group: %v", err)}
+	done, err := beginOutbound(ctx, messageStore, jid)
+	if err != nil {
+		return LeaveGroupResponse{}, err
 	}
-	return LeaveGroupResponse{Success: true, Message: fmt.Sprintf("Left group %s", jid.String())}
+	defer done()
+	if err := client.LeaveGroup(context.WithoutCancel(ctx), jid); err != nil {
+		return LeaveGroupResponse{}, fmt.Errorf("Error leaving group: %v", err)
+	}
+	return LeaveGroupResponse{Success: true, Message: fmt.Sprintf("Left group %s", jid.String())}, nil
 }
 
 type DownloadMediaResponse struct {
@@ -3431,7 +3523,14 @@ img{border:8px solid white;border-radius:8px;box-shadow:0 4px 20px rgba(0,0,0,.2
 		fmt.Println("Received request to send message", req.Message, req.MediaPath)
 
 		// Send the message
-		success, message := sendWhatsAppMessage(client, messageStore, req.Recipient, req.Message, req.MediaPath, req.ReplyToMessageID, req.Mentions)
+		message, err := sendWhatsAppMessage(r.Context(), client, messageStore, req.Recipient, req.Message, req.MediaPath, req.ReplyToMessageID, req.Mentions)
+		if writeSendRateError(w, err) {
+			return
+		}
+		success := err == nil
+		if !success {
+			message = err.Error()
+		}
 		fmt.Println("Message sent", success, message)
 		// Set response headers
 		w.Header().Set("Content-Type", "application/json")
@@ -3543,9 +3642,13 @@ img{border:8px solid white;border-radius:8px;box-shadow:0 4px 20px rgba(0,0,0,.2
 			return
 		}
 		fmt.Printf("Received request to create group %q with %d participants\n", req.Name, len(req.Participants))
-		resp := createWhatsAppGroup(client, messageStore, req)
+		resp, err := createWhatsAppGroup(r.Context(), client, messageStore, req)
+		if writeSendRateError(w, err) {
+			return
+		}
 		w.Header().Set("Content-Type", "application/json")
-		if !resp.Success {
+		if err != nil {
+			resp = CreateGroupResponse{Success: false, Message: err.Error()}
 			w.WriteHeader(http.StatusInternalServerError)
 		}
 		json.NewEncoder(w).Encode(resp)
@@ -3602,9 +3705,13 @@ img{border:8px solid white;border-radius:8px;box-shadow:0 4px 20px rgba(0,0,0,.2
 			return
 		}
 		fmt.Printf("Received request to leave group %q\n", req.JID)
-		resp := leaveWhatsAppGroup(client, req.JID)
+		resp, err := leaveWhatsAppGroup(r.Context(), client, messageStore, req.JID)
+		if writeSendRateError(w, err) {
+			return
+		}
 		w.Header().Set("Content-Type", "application/json")
-		if !resp.Success {
+		if err != nil {
+			resp = LeaveGroupResponse{Success: false, Message: err.Error()}
 			w.WriteHeader(http.StatusInternalServerError)
 		}
 		json.NewEncoder(w).Encode(resp)
@@ -3985,11 +4092,11 @@ img{border:8px solid white;border-radius:8px;box-shadow:0 4px 20px rgba(0,0,0,.2
 	http.HandleFunc("/api/revoke", handleRevoke(whatsmeowActions{client}, messageStore))
 
 	// Handler for adding, removing, promoting or demoting group participants.
-	http.HandleFunc("/api/group_participants", handleGroupParticipants(client))
-	http.HandleFunc("/api/group_invite", handleGroupInvite(client, false))
-	http.HandleFunc("/api/group_invite_reset", handleGroupInvite(client, true))
-	http.HandleFunc("/api/group_join", handleGroupJoin(client))
-	http.HandleFunc("/api/group_settings", handleGroupSettings(client))
+	http.HandleFunc("/api/group_participants", handleGroupParticipants(client, messageStore))
+	http.HandleFunc("/api/group_invite", handleGroupInvite(client, messageStore, false))
+	http.HandleFunc("/api/group_invite_reset", handleGroupInvite(client, messageStore, true))
+	http.HandleFunc("/api/group_join", handleGroupJoin(client, messageStore))
+	http.HandleFunc("/api/group_settings", handleGroupSettings(client, messageStore))
 
 	// Handlers for creating a poll and reading its recorded votes.
 	http.HandleFunc("/api/poll", handlePoll(client, messageStore))
@@ -4099,6 +4206,12 @@ func newRESTServer(addr string, h http.Handler) *http.Server {
 func main() {
 	// Set up logger
 	logger := waLog.Stdout("Client", "INFO", true)
+	limiter, limiterErr := sendLimiterFromEnv()
+	if limiterErr != nil {
+		logger.Errorf("%v", limiterErr)
+		os.Exit(2)
+	}
+	outboundLimiter = limiter
 	logger.Infof("Starting WhatsApp client...")
 
 	// Create database connection for storing session data
