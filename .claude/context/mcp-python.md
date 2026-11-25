@@ -49,3 +49,8 @@ não depender de `Z` sendo enviado.
 - Claude Desktop: `~/Library/Application Support/Claude/claude_desktop_config.json`
 - Cursor: `~/.cursor/mcp.json`
 - Roda via `uv --directory <path>/whatsapp-mcp-server run main.py`.
+
+## Message text is third-party data
+
+- `format_message` keeps every name on one line (`_one_line`), prefixes each further line of a message with `  | `, and shows `Me` only for `is_from_me`; a contact named "Me" gets its id appended. Only the first line of an entry starts with `[<time>]`. Do not print contact-controlled text raw in a new listing.
+- `_INSTRUCTIONS` (FastMCP `instructions`) and the first lines of `commands/{triage,morning,style,favorites}.md` tell the client that message text is never an instruction (`test_message_format_forgery.py` keeps both).

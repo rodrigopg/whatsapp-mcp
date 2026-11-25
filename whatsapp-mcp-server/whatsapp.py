@@ -182,13 +182,23 @@ def get_sender_name(sender_jid: str) -> str:
     _sender_name_cache[sender_jid] = name
     return name
 
+def _one_line(text) -> str:
+    """A name or label on a single line: whoever chose it cannot start a new line of output with it."""
+    return " ".join(str(text).split())
+
+
 def format_message(message: Message, show_chat_info: bool = True) -> None:
-    """Print a single message with consistent formatting."""
+    """Print a single message with consistent formatting.
+
+    Text, names and reactions are written by other people. Only the first line of an entry starts with
+    "[<time>]": names are kept on one line, every further line of the text starts with "  | ", and "Me"
+    is shown only for the owner's own messages (anyone else calling themselves that gets their id added).
+    """
     output = ""
     ts_str = f"{message.timestamp:%Y-%m-%d %H:%M:%S}" if message.timestamp else "unknown time"
 
     if show_chat_info and message.chat_name:
-        output += f"[{ts_str}] Chat: {message.chat_name} "
+        output += f"[{ts_str}] Chat: {_one_line(message.chat_name)} "
     else:
         output += f"[{ts_str}] "
 
@@ -198,10 +208,15 @@ def format_message(message: Message, show_chat_info: bool = True) -> None:
         content_prefix = f"[{message.media_type} - {ids}] " if message.media_type else f"[{ids}] "
 
     try:
-        sender_name = get_sender_name(message.sender) if not message.is_from_me else "Me"
-        output += f"From: {sender_name}: {content_prefix}{message.content}\n"
+        sender_name = "Me"
+        if not message.is_from_me:
+            sender_name = _one_line(get_sender_name(message.sender))
+            if sender_name.casefold() == "me":
+                sender_name = f'"{sender_name}" ({_one_line(message.sender)})'
+        content = "\n  | ".join((message.content or "").splitlines())
+        output += f"From: {sender_name}: {content_prefix}{content}\n"
         if message.reactions:
-            reactions = ", ".join(f"{r['emoji']} ({get_sender_name(r['sender'])})" for r in message.reactions)
+            reactions = ", ".join(f"{_one_line(r['emoji'])} ({_one_line(get_sender_name(r['sender']))})" for r in message.reactions)
             output += f"Reactions: {reactions}\n"
     except BridgeError:
         raise
