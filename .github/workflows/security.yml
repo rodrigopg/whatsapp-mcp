@@ -27,14 +27,13 @@ jobs:
         working-directory: whatsapp-bridge
         # Not enforced:
         #   G104 unchecked errors: a code-quality rule, dozens of hits, none a vulnerability by itself.
-        #   G114 server without timeouts: not enforced yet.
         #   G304 file path from a variable: this program reads files by path by design, and CodeQL
         #        follows the data flow instead of flagging every call.
         #   media_path.go G122/G302: the walk that tightens the bridge's own 0700 store.
         # A single false positive gets "// #nosec <rule> -- <reason>" on the line above it.
         run: >
           go run github.com/securego/gosec/v2/cmd/gosec@v2.30.0
-          -exclude=G104,G114,G304
+          -exclude=G104,G304
           -exclude-rules='media_path\.go:G122,G302'
           ./...
 
