@@ -2013,6 +2013,17 @@ func (store *MessageStore) GetMediaInfo(id, chatJID string) (string, string, str
 // components are partly attacker-influenced (filename comes from the message,
 // the retry message ID comes from the phone's response), so they are reduced to
 // their base name and checked for separators / dot segments.
+// chatMediaDir is the folder that holds a chat's downloaded media: store/<chat id>, the id being a
+// single path component. Stored chat ids come from WhatsApp and never hold a separator or a
+// dot-dot; one that does is refused, not cleaned up.
+func chatMediaDir(chatJID string) (string, error) {
+	name := strings.ReplaceAll(chatJID, ":", "_")
+	if name == "" || name == "." || strings.Contains(name, "..") || strings.ContainsAny(name, `/\`) {
+		return "", fmt.Errorf("unsafe chat id for a media folder: %q", chatJID)
+	}
+	return filepath.Join("store", name), nil
+}
+
 func safeMediaPath(chatDir, messageID, filename string) (string, error) {
 	// Reject the raw components rather than silently reducing them with
 	// filepath.Base — a value containing a separator or dot segment is treated
@@ -2021,6 +2032,9 @@ func safeMediaPath(chatDir, messageID, filename string) (string, error) {
 		if c == "" || c == "." || c == ".." || strings.ContainsAny(c, `/\`) {
 			return "", fmt.Errorf("unsafe media path component: %q", c)
 		}
+	}
+	if strings.Contains(messageID, "..") { // real IDs are hex/base64; a file name may hold ".." legitimately
+		return "", fmt.Errorf("unsafe media path component: %q", messageID)
 	}
 	joined := filepath.Join(chatDir, messageID+"_"+filename)
 	// Defense in depth: ensure the cleaned result is still under chatDir.
@@ -2086,7 +2100,10 @@ func downloadMedia(client *whatsmeow.Client, messageStore *MessageStore, message
 	var err error
 
 	// First, check if we already have this file
-	chatDir := fmt.Sprintf("store/%s", strings.ReplaceAll(chatJID, ":", "_"))
+	chatDir, err := chatMediaDir(chatJID)
+	if err != nil {
+		return false, "", "", "", err
+	}
 	localPath := ""
 
 	// Get media info from the database
@@ -2140,7 +2157,7 @@ func downloadMedia(client *whatsmeow.Client, messageStore *MessageStore, message
 		return false, "", "", "", fmt.Errorf("incomplete media information for download")
 	}
 
-	fmt.Printf("Attempting to download media for message %s in chat %s...\n", messageID, chatJID)
+	fmt.Printf("Attempting to download media for message %q in chat %q...\n", messageID, chatJID)
 
 	// Extract direct path from URL
 	directPath := extractDirectPathFromURL(url)
@@ -2181,7 +2198,7 @@ func downloadMedia(client *whatsmeow.Client, messageStore *MessageStore, message
 		return false, "", "", "", fmt.Errorf("failed to save media file: %v", err)
 	}
 
-	fmt.Printf("Successfully downloaded %s media to %s (%d bytes)\n", mediaType, absPath, len(mediaData))
+	fmt.Printf("Successfully downloaded %q media to %q (%d bytes)\n", mediaType, absPath, len(mediaData))
 	return true, mediaType, filename, absPath, nil
 }
 
@@ -2317,7 +2334,7 @@ func resolvePhoneToJIDs(phone string) []string {
 
 	db, err := openStoreDBReadOnly()
 	if err != nil {
-		fmt.Printf("resolvePhoneToJIDs: whatsapp.db unavailable (%v), falling back to base JID only for %s\n", err, phone)
+		fmt.Printf("resolvePhoneToJIDs: whatsapp.db unavailable (%v), falling back to base JID only for %q\n", err, phone)
 		return jids
 	}
 	defer db.Close()
@@ -2326,14 +2343,14 @@ func resolvePhoneToJIDs(phone string) []string {
 	row := db.QueryRow("SELECT lid, pn FROM whatsmeow_lid_map WHERE pn = ?", phone)
 	err = row.Scan(&lid, &pn)
 	if err != nil && err != sql.ErrNoRows && len(phone) > 10 {
-		fmt.Printf("resolvePhoneToJIDs: exact lid_map lookup failed for %s: %v\n", phone, err)
+		fmt.Printf("resolvePhoneToJIDs: exact lid_map lookup failed for %q: %v\n", phone, err)
 	}
 	if err != nil && len(phone) > 10 {
 		suffix := phone[len(phone)-10:]
 		row = db.QueryRow("SELECT lid, pn FROM whatsmeow_lid_map WHERE pn LIKE ?", "%"+suffix)
 		err = row.Scan(&lid, &pn)
 		if err != nil && err != sql.ErrNoRows {
-			fmt.Printf("resolvePhoneToJIDs: suffix lid_map lookup failed for %s: %v\n", phone, err)
+			fmt.Printf("resolvePhoneToJIDs: suffix lid_map lookup failed for %q: %v\n", phone, err)
 		}
 	}
 	if err == nil {
@@ -2353,7 +2370,7 @@ func getContactNameFromStore(phone string) string {
 	phone = normalizePhone(phone)
 	db, err := openStoreDBReadOnly()
 	if err != nil {
-		fmt.Printf("getContactNameFromStore: whatsapp.db unavailable (%v) for %s\n", err, phone)
+		fmt.Printf("getContactNameFromStore: whatsapp.db unavailable (%v) for %q\n", err, phone)
 		return ""
 	}
 	defer db.Close()
@@ -2365,7 +2382,7 @@ func getContactNameFromStore(phone string) string {
 	).Scan(&fullName, &pushName)
 	if err != nil {
 		if err != sql.ErrNoRows {
-			fmt.Printf("getContactNameFromStore: query failed for %s: %v\n", phone, err)
+			fmt.Printf("getContactNameFromStore: query failed for %q: %v\n", phone, err)
 		}
 		return ""
 	}
@@ -3572,7 +3589,7 @@ img{border:8px solid white;border-radius:8px;box-shadow:0 4px 20px rgba(0,0,0,.2
 			http.Error(w, "Invalid request format", http.StatusBadRequest)
 			return
 		}
-		fmt.Printf("Received request to leave group %s\n", req.JID)
+		fmt.Printf("Received request to leave group %q\n", req.JID)
 		resp := leaveWhatsAppGroup(client, req.JID)
 		w.Header().Set("Content-Type", "application/json")
 		if !resp.Success {
@@ -4834,7 +4851,11 @@ func handleMediaRetry(client *whatsmeow.Client, messageStore *MessageStore, evt 
 		return
 	}
 
-	chatDir := fmt.Sprintf("store/%s", strings.ReplaceAll(entry.chatJID, ":", "_"))
+	chatDir, err := chatMediaDir(entry.chatJID)
+	if err != nil {
+		fmt.Printf("MEDIA RETRY %s: ERROR %v\n", evt.MessageID, err)
+		return
+	}
 	if err := os.MkdirAll(chatDir, 0o700); err != nil {
 		fmt.Printf("MEDIA RETRY %s: ERROR mkdir failed: %v\n", evt.MessageID, err)
 		return

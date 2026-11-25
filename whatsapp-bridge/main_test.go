@@ -575,13 +575,13 @@ func TestMergeIsOnWhatsAppResults(t *testing.T) {
 
 	t.Run("unregistered number omitted by lib is backfilled as is_in false", func(t *testing.T) {
 		resp := []types.IsOnWhatsAppResponse{
-			{Query: "+556291788888", IsIn: true, JID: types.NewJID("556291788888", types.DefaultUserServer)},
+			{Query: "+5562911112222", IsIn: true, JID: types.NewJID("5562911112222", types.DefaultUserServer)},
 		}
-		out := mergeIsOnWhatsAppResults([]string{"+556291788888", "+5562000000000"}, resp)
+		out := mergeIsOnWhatsAppResults([]string{"+5562911112222", "+5562000000000"}, resp)
 		if len(out) != 2 {
 			t.Fatalf("got %d results, want 2: %+v", len(out), out)
 		}
-		if out[0].Query != "+556291788888" || !out[0].IsIn {
+		if out[0].Query != "+5562911112222" || !out[0].IsIn {
 			t.Fatalf("got[0] = %+v", out[0])
 		}
 		if out[1].Query != "+5562000000000" || out[1].IsIn || out[1].JID != "" {
