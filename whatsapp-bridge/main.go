@@ -137,7 +137,7 @@ func NewMessageStore() (*MessageStore, error) {
 		CREATE INDEX IF NOT EXISTS idx_messages_time ON messages(julianday(timestamp));
 		CREATE INDEX IF NOT EXISTS idx_messages_sender_time ON messages(sender, julianday(timestamp));
 		CREATE INDEX IF NOT EXISTS idx_chats_time ON chats(julianday(last_message_time) DESC, jid);
-	` + pollSchema + matterSchema + favoritesSchema + summarySchema + draftsSchema + mentionsSchema + lidMediaSchema + reactionsSchema)
+	` + pollSchema + matterSchema + favoritesSchema + summarySchema + draftsSchema + mentionsSchema + lidMediaSchema + reactionsSchema + messageEditsSchema)
 	if err != nil {
 		db.Close()
 		return nil, fmt.Errorf("failed to create tables: %v", err)
@@ -322,13 +322,18 @@ func (store *MessageStore) StoreMessage(id, chatJID, sender, content string, tim
 	// The WHERE keeps the update to the row's own author (same rule as ApplyEdit): message IDs
 	// are chosen by whoever sends, so a message reusing a stored ID must not replace what someone
 	// else wrote. An unknown author on either side still refreshes the row.
-	res, err := store.db.Exec(
+	tx, err := store.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	res, err := tx.Exec(
 		`INSERT INTO messages
 		(id, chat_jid, sender, content, timestamp, is_from_me, media_type, filename, url, media_key, file_sha256, file_enc_sha256, file_length)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id, chat_jid) DO UPDATE SET
 			sender          = COALESCE(NULLIF(excluded.sender, ''), messages.sender),
-			content         = COALESCE(NULLIF(excluded.content, ''), messages.content),
+			content         = CASE WHEN messages.content = ?15 THEN messages.content ELSE COALESCE(NULLIF(excluded.content, ''), messages.content) END,
 			timestamp       = excluded.timestamp,
 			is_from_me      = excluded.is_from_me,
 			media_type      = excluded.media_type,
@@ -339,16 +344,21 @@ func (store *MessageStore) StoreMessage(id, chatJID, sender, content string, tim
 			file_enc_sha256 = CASE WHEN length(excluded.file_enc_sha256) > 0 THEN excluded.file_enc_sha256 ELSE messages.file_enc_sha256 END,
 			file_length     = excluded.file_length
 		WHERE messages.is_from_me = excluded.is_from_me
-			AND (excluded.is_from_me = 1 OR messages.sender = '' OR excluded.sender = '' OR messages.sender IN (excluded.sender, ?))`,
+			AND (excluded.is_from_me = 1 OR messages.sender = '' OR excluded.sender = '' OR messages.sender IN (excluded.sender, ?14))`,
 		id, chatJID, sender, content, timestamp, isFromMe, mediaType, filename, url, mediaKey, fileSHA256, fileEncSHA256, fileLength,
 		strings.TrimSuffix(sender, "@"+types.HiddenUserServer), // rows stored before senderKey hold a LID author as the bare user
+		revokedContent,
 	)
-	if err == nil {
-		if n, _ := res.RowsAffected(); n == 0 {
-			fmt.Printf("StoreMessage: kept the stored message %q in %q, the incoming one has another author\n", id, chatJID)
-		}
+	if err != nil {
+		return err
 	}
-	return err
+	if n, _ := res.RowsAffected(); n == 0 {
+		fmt.Printf("StoreMessage: kept the stored message %q in %q, the incoming one has another author\n", id, chatJID)
+	}
+	if err = applyRecordedEdit(tx, id, chatJID); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 // Get messages from a chat
@@ -853,36 +863,26 @@ func protocolAction(m *waProto.Message) (targetID, newContent string, ok bool) {
 	return "", "", false
 }
 
-// ApplyEdit rewrites the content of an existing row. Audio rows keep their
-// transcription on edit (edits carry no transcript); a revoke overrides it.
-// Only the original author may change a row: the stored is_from_me must match
-// the event's, and for others' messages the stored sender must be the event's
-// sender (otherwise any group member could rewrite anyone's message).
-func (store *MessageStore) ApplyEdit(id, chatJID, content string, fromMe bool, sender string) error {
-	// Rows stored before senderKey hold an unresolved LID author as the bare user. Taking the bare
-	// digits as that LID is safe enough: the edit must also name this chat and message ID, and
-	// nobody picks their LID to match someone else's phone number.
-	legacy := strings.TrimSuffix(sender, "@"+types.HiddenUserServer)
-	_, err := store.db.Exec(
-		`UPDATE messages SET content = ? WHERE id = ? AND chat_jid = ?
-		 AND is_from_me = ? AND (is_from_me = 1 OR sender IN (?, ?))
-		 AND (? = ? OR COALESCE(media_type, '') != 'audio')`,
-		content, id, chatJID, fromMe, sender, legacy, content, revokedContent)
-	return err
-}
-
 // Handle regular incoming messages with media support
-// handleMessage stores one live message. It returns false only when a database write failed: with
+// handleMessage stores one live message. It returns false when a database read or write failed: with
 // SynchronousAck the server then gets no ack and redelivers the message after a reconnect, and the
 // decrypted event buffer lets the redelivery through the Signal ratchet a second time.
 func handleMessage(client *whatsmeow.Client, messageStore *MessageStore, msg *events.Message, logger waLog.Logger) bool {
 	if msg.Info.Chat == types.StatusBroadcastJID {
 		return true
 	}
+	var decryptErr error
+	msg, decryptErr = decryptIncomingMessage(client, msg, logger)
+	if decryptErr != nil {
+		return false
+	}
+	if msg == nil {
+		return true
+	}
 	if msg.Message.GetProtocolMessage() != nil {
 		if id, content, ok := protocolAction(msg.Message); ok {
 			chat := resolveToPN(client, msg.Info.Chat).String()
-			if err := messageStore.ApplyEdit(id, chat, content, msg.Info.IsFromMe, senderKey(client, msg.Info.Sender)); err != nil {
+			if err := messageStore.ApplyEdit(id, chat, content, msg.Info.IsFromMe, senderKey(client, msg.Info.Sender), protocolTimestamp(msg.Message, msg.Info.Timestamp)); err != nil {
 				logger.Warnf("Failed to apply edit/revoke: %v", err)
 				return false
 			}
@@ -4580,6 +4580,14 @@ func handleHistorySync(client *whatsmeow.Client, messageStore *MessageStore, his
 				sender := senderKey(client, historySender(jid, own, msg.Message))
 				// #nosec G115 -- a message timestamp in seconds fits int64
 				timestamp := time.Unix(int64(msg.Message.GetMessageTimestamp()), 0)
+				if inner.GetProtocolMessage() != nil {
+					if id, content, ok := protocolAction(inner); ok {
+						if err := messageStore.ApplyEdit(id, chatJID, content, msg.Message.GetKey().GetFromMe(), sender, protocolTimestamp(inner, timestamp)); err != nil {
+							logger.Warnf("Failed to apply history edit/revoke: %v", err)
+						}
+					}
+					continue
+				}
 				if reaction := inner.GetReactionMessage(); reaction != nil {
 					if err := messageStore.StoreReaction(chatJID, reaction.GetKey().GetID(), sender, reaction.GetText(), reaction.GetSenderTimestampMS(), timestamp); err != nil {
 						logger.Warnf("Failed to store history reaction: %v", err)
