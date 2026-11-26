@@ -116,7 +116,7 @@ func downloadFileHandler(download func(messageID, chatJID string) (bool, string,
 			fail(errors.New("not a chat media file"))
 			return
 		}
-		f, err := openNoLinks("store", []string{folder, filepath.Base(path)}, true)
+		f, err := openNoLinks(storePath(), []string{folder, filepath.Base(path)}, true)
 		if err != nil {
 			fail(err)
 			return

@@ -6,6 +6,7 @@ services:
     environment:
       API_AUTH_TOKEN: ${API_AUTH_TOKEN:?set API_AUTH_TOKEN in .env}
       WHATSAPP_BRIDGE_PORT: ${WHATSAPP_BRIDGE_PORT:-8080}
+      WHATSAPP_STORE_DIR: /app/whatsapp-bridge/store
     healthcheck:
       test: ["CMD", "python", "-c", "import os,urllib.request as u;u.urlopen('http://127.0.0.1:%s/healthz'%os.environ.get('WHATSAPP_BRIDGE_PORT','8080'),timeout=4)"]
       interval: 30s

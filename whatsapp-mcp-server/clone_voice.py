@@ -9,7 +9,8 @@ collected. Output (all local, nothing is uploaded):
     <out>/metadata.csv      LJSpeech style: id|text
     <out>/report.txt
 
-Run with: uv run --with imageio-ffmpeg python clone_voice.py --store ../whatsapp-bridge/store
+Run with: uv run --with imageio-ffmpeg python clone_voice.py
+Uses WHATSAPP_STORE_DIR (default: ../whatsapp-bridge/store); --store overrides it.
 """
 import argparse
 import csv
@@ -21,6 +22,8 @@ import subprocess
 import sys
 import wave
 from pathlib import Path
+
+from store_paths import STORE_DIR
 
 SAMPLE_RATE = 24000
 PLACEHOLDER = re.compile(r"^\s*(\[.*\]|<.*>)?\s*$")
@@ -71,7 +74,7 @@ def rows(db, since, chat):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--store", required=True, help="bridge store dir (has messages.db and one folder per chat)")
+    ap.add_argument("--store", default=STORE_DIR, help="bridge store dir (default: WHATSAPP_STORE_DIR or whatsapp-bridge/store)")
     ap.add_argument("--out", default="voice-dataset")
     ap.add_argument("--min-sec", type=float, default=2.0)
     ap.add_argument("--max-sec", type=float, default=20.0)

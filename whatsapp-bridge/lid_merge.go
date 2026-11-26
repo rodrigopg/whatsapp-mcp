@@ -93,9 +93,13 @@ func migrateLIDChats(client *whatsmeow.Client, store *MessageStore, logger waLog
 	if rows != nil {
 		rows.Close()
 	}
-	lidDirs, _ := filepath.Glob(filepath.Join("store", "*@"+types.HiddenUserServer))
+	// ReadDir, not Glob: a store path may hold glob metacharacters such as "[".
+	lidDirs, _ := os.ReadDir(storePath())
 	for _, dir := range lidDirs {
-		lid := filepath.Base(dir)
+		if !dir.IsDir() || !strings.HasSuffix(dir.Name(), "@"+types.HiddenUserServer) {
+			continue
+		}
+		lid := dir.Name()
 		lidJID, err := types.ParseJID(lid)
 		pn := resolveToPN(client, lidJID)
 		if _, planned := moves[lid]; planned || err != nil || pn.Server != types.DefaultUserServer || chatExists(store.db, lid) {
@@ -211,8 +215,8 @@ func moveChatMedia(db *sql.DB, lid, pn string) error {
 	if err := rows.Err(); err != nil {
 		return err
 	}
-	from := filepath.Join("store", strings.ReplaceAll(lid, ":", "_"))
-	to := filepath.Join("store", strings.ReplaceAll(pn, ":", "_"))
+	from := storePath(strings.ReplaceAll(lid, ":", "_"))
+	to := storePath(strings.ReplaceAll(pn, ":", "_"))
 	entries, err := os.ReadDir(from)
 	if os.IsNotExist(err) {
 		_, err = db.Exec(`DELETE FROM lid_media_moves WHERE lid = ?`, lid)
