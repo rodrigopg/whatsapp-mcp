@@ -32,10 +32,10 @@ from datetime import datetime, timedelta, timezone
 
 import requests
 
-# WhatsApp purges undelivered media from its CDN after roughly 2-3 weeks. Past
-# this age a CDN download failure is permanent (the media may still be
-# recoverable from the phone via recover_audios.py); before it, treat the
-# failure as transient and let the next sweep retry.
+# WhatsApp purges undelivered media from its CDN after roughly 2-3 weeks. An
+# audio is marked unavailable only when the bridge says the CDN no longer has
+# it (reason "media_gone") and it is older than this; a younger one may still
+# come back through a media retry from the phone (recover_audios.py).
 CDN_EXPIRY = timedelta(days=21)
 
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'whatsapp-bridge', 'store', 'messages.db')
@@ -58,6 +58,12 @@ TRANSCRIPTION_ENGINE = os.environ.get("TRANSCRIPTION_ENGINE", "local").lower()
 # Local backend (whisper.cpp)
 WHISPER_CLI = os.environ.get("WHISPER_CLI", "")
 WHISPER_MODEL = os.environ.get("WHISPER_MODEL", "")
+try:
+    TRANSCRIPTION_TIMEOUT = int(os.environ.get("TRANSCRIPTION_TIMEOUT", "600"))
+except ValueError:
+    TRANSCRIPTION_TIMEOUT = 600
+if TRANSCRIPTION_TIMEOUT <= 0:  # subprocess rejects 0 or less; fall back instead of failing every audio
+    TRANSCRIPTION_TIMEOUT = 600
 DECODING_OPTS = ["--temperature", "0", "--no-fallback", "--max-context", "0", "--split-on-word"]
 
 # API backend (OpenAI Whisper, or any OpenAI-compatible endpoint such as Groq).
@@ -137,7 +143,7 @@ TRANSCRIBE_OUTGOING = os.environ.get("TRANSCRIBE_OUTGOING", "") == "1"
 
 
 def pending_audios(conn, limit=None):
-    sql = ("SELECT id, chat_jid, hex(file_sha256), timestamp FROM messages "
+    sql = ("SELECT id, chat_jid, hex(file_sha256), file_length, timestamp FROM messages "
            "WHERE media_type='audio' AND (content IS NULL OR content='') ")
     if not TRANSCRIBE_OUTGOING:
         sql += "AND COALESCE(is_from_me, 0) = 0 "
@@ -185,6 +191,31 @@ def sha256_file(path):
     return h.hexdigest().upper()
 
 
+def valid_audio_file(path, expected_sha, file_length):
+    try:
+        if not os.path.isfile(path) or os.path.getsize(path) == 0:
+            return False
+        if expected_sha:
+            return sha256_file(path) == expected_sha.upper()
+        return not file_length or os.path.getsize(path) == file_length
+    except OSError:
+        return False
+
+
+def cached_audio(message_id, chat_jid, expected_sha, file_length):
+    chat_dir = os.path.join(os.path.dirname(DB_PATH), chat_jid.replace(":", "_"))
+    try:
+        filenames = os.listdir(chat_dir)
+    except OSError:
+        return None
+    for filename in filenames:
+        if filename.startswith(message_id + "_"):
+            path = os.path.join(chat_dir, filename)
+            if valid_audio_file(path, expected_sha, file_length):
+                return path
+    return None
+
+
 def transcribe(ogg_path, message_id):
     """Transcribe one audio file to text. Dispatches to the configured engine.
     Public signature is stable — recover_audios.py imports and calls this."""
@@ -217,8 +248,9 @@ def _transcribe_local(ogg_path, message_id):
     try:
         subprocess.run(["ffmpeg", "-i", ogg_path, "-ar", "16000", "-ac", "1",
                         "-c:a", "pcm_s16le", "-y", wav],
-                       check=True, capture_output=True)
-        subprocess.run(_whisper_cli_cmd(wav, out_base), check=True, capture_output=True)
+                       check=True, capture_output=True, timeout=120)
+        subprocess.run(_whisper_cli_cmd(wav, out_base), check=True, capture_output=True,
+                       timeout=TRANSCRIPTION_TIMEOUT)
         with open(out_base + ".json", encoding="utf-8") as f:
             data = json.load(f)
         text = (data.get("text") or "").strip()
@@ -332,21 +364,16 @@ def main():
     log(f"Pending audios: {total}")
     done = empty = unavailable = mismatch = failed = 0
 
-    for i, (msg_id, chat_jid, exp_sha, ts) in enumerate(rows, 1):
+    for i, (msg_id, chat_jid, exp_sha, file_length, ts) in enumerate(rows, 1):
         prefix = f"[{i}/{total}] {msg_id[:12]}"
         try:
-            # Force a fresh download: drop this message's own cached file so the
-            # bridge re-fetches rather than serving a possibly-stale copy.
-            chat_dir = os.path.join(os.path.dirname(DB_PATH), chat_jid.replace(":", "_"))
-            if os.path.isdir(chat_dir):
-                for fn in os.listdir(chat_dir):
-                    if fn.startswith(msg_id + "_"):
-                        try:
-                            os.remove(os.path.join(chat_dir, fn))
-                        except OSError:
-                            pass
-
-            path, dl_err, media_gone = download(msg_id, chat_jid)
+            # A cached file that passes the integrity check is used as is; only
+            # a missing or bad one is fetched again, and nothing is deleted, so
+            # an audio the CDN has since dropped is not lost to a failed re-fetch.
+            path = cached_audio(msg_id, chat_jid, exp_sha, file_length)
+            dl_err, media_gone = None, False
+            if not path:
+                path, dl_err, media_gone = download(msg_id, chat_jid)
             if not path or not os.path.isfile(path):
                 # Only mark permanently unavailable once the CDN window has
                 # certainly passed AND the bridge reported the CDN signal
@@ -365,14 +392,12 @@ def main():
                     log(f"{prefix} unavailable (expired CDN): {dl_err}")
                 else:
                     failed += 1
-                    log(f"{prefix} download failed but recent — will retry next sweep: {dl_err}")
+                    log(f"{prefix} download failed — will retry next sweep: {dl_err}")
                 continue
 
-            actual = sha256_file(path)
-            if exp_sha and actual != exp_sha:
-                # Wrong bytes — do NOT write a transcript that would be misattributed.
+            if not valid_audio_file(path, exp_sha, file_length):
                 mismatch += 1
-                log(f"{prefix} SHA MISMATCH expected={exp_sha[:12]} got={actual[:12]} — skipping")
+                log(f"{prefix} audio integrity check failed — skipping")
                 continue
 
             text = transcribe(path, msg_id)

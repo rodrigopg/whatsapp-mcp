@@ -16,9 +16,10 @@ class PendingOutgoingTest(unittest.TestCase):
         self.conn = sqlite3.connect(":memory:")
         self.addCleanup(self.conn.close)
         self.conn.execute("CREATE TABLE messages (id TEXT, chat_jid TEXT, content TEXT, "
-                          "timestamp TEXT, media_type TEXT, file_sha256 BLOB, is_from_me BOOLEAN)")
+                          "timestamp TEXT, media_type TEXT, file_sha256 BLOB, is_from_me BOOLEAN, "
+                          "file_length INTEGER)")
         self.conn.executemany(
-            "INSERT INTO messages VALUES (?, 'c@s.whatsapp.net', '', '2026-01-01', 'audio', NULL, ?)",
+            "INSERT INTO messages VALUES (?, 'c@s.whatsapp.net', '', '2026-01-01', 'audio', NULL, ?, NULL)",
             [("IN", 0), ("OUT", 1)])
 
     def _pending_ids(self, flag):
