@@ -23,7 +23,7 @@ class MessageTypesTest(unittest.TestCase):
                                  {"sender": "222", "emoji": "❤️", "timestamp": "2026-10-22T10:00:01Z"}]}
         def api(endpoint, payload):
             if endpoint == "/messages":
-                return {"messages": [message]}
+                return {"messages": [message], "context_included": True}
             if endpoint == "/message_context":
                 return {"message": message, "before": [message], "after": [message]}
             return {"name": {"111": "Alice", "222": "Bob"}[payload["sender_jid"]]}

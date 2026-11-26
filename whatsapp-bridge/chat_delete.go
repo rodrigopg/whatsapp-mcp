@@ -71,7 +71,7 @@ func forgetChatLocally(db *sql.DB, chat string) error {
 		return err
 	}
 	defer tx.Rollback()
-	for _, q := range []string{`DELETE FROM read_receipts WHERE chat_jid = ?`, `DELETE FROM reactions WHERE chat_jid = ?`, `DELETE FROM message_mentions WHERE chat_jid = ?`, `DELETE FROM messages WHERE chat_jid = ?`, `DELETE FROM chats WHERE jid = ?`} {
+	for _, q := range []string{`DELETE FROM read_receipts WHERE chat_jid = ?`, `DELETE FROM message_edits WHERE chat_jid = ?`, `DELETE FROM reactions WHERE chat_jid = ?`, `DELETE FROM message_mentions WHERE chat_jid = ?`, `DELETE FROM messages WHERE chat_jid = ?`, `DELETE FROM chats WHERE jid = ?`} {
 		if _, err := tx.Exec(q, chat); err != nil {
 			return err
 		}

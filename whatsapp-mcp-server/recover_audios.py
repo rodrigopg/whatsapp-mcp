@@ -14,7 +14,6 @@ Run:  python3 recover_audios.py [--limit N] [--batch 15]
 """
 
 import argparse
-import glob
 import os
 import re
 import sqlite3
@@ -23,7 +22,7 @@ import time
 import requests
 
 from transcribe import (DB_PATH, API_BASE, transcribe, write_content,
-                        engine_ready, SENTINEL_EMPTY, _bridge_auth_headers)
+                        engine_ready, SENTINEL_EMPTY, _bridge_auth_headers, cached_audio)
 
 # Default: where install.sh points the bridge's output (<install dir>/bridge.log).
 BRIDGE_LOG = os.environ.get("WHATSAPP_BRIDGE_LOG") or os.path.join(
@@ -92,9 +91,13 @@ def scan_log_since(offset):
 
 
 def recovered_file(chat_jid, msg_id):
-    chat_dir = os.path.join(os.path.dirname(DB_PATH), chat_jid.replace(":", "_"))
-    hits = glob.glob(os.path.join(chat_dir, f"{msg_id}_*"))
-    return hits[0] if hits else None
+    conn = sqlite3.connect(DB_PATH, timeout=10)
+    try:
+        row = conn.execute("SELECT hex(file_sha256), file_length FROM messages "
+                           "WHERE id=? AND chat_jid=?", (msg_id, chat_jid)).fetchone()
+    finally:
+        conn.close()
+    return cached_audio(msg_id, chat_jid, *row) if row else None
 
 
 def main():

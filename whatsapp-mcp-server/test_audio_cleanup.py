@@ -19,20 +19,32 @@ class AudioCleanup(unittest.TestCase):
         for kwargs in cases:
             with self.subTest(kwargs), tempfile.TemporaryDirectory() as directory:
                 source, converted = os.path.join(directory, "input.wav"), os.path.join(directory, "converted.ogg")
-                for path in (source, converted):
-                    with open(path, "wb") as stream:
-                        stream.write(b"audio")
+                with open(source, "wb") as stream:
+                    stream.write(b"wave")
+                with open(converted, "wb") as stream:
+                    stream.write(b"OggS")
+                copies = []
+
+                def convert(path):
+                    copies.append(path)
+                    with open(path, "rb") as f:
+                        self.assertEqual(f.read(), b"wave")
+                    return converted
 
                 def post(*args, **kw):
                     self.assertTrue(os.path.exists(converted), "audio removed before upload")
-                    self.assertEqual(kw["json"]["media_path"], converted)
+                    self.assertEqual(kw["data"], b"OggS")
                     if "side_effect" in kwargs:
                         raise kwargs["side_effect"]
                     return kwargs["return_value"]
 
-                with patch("whatsapp.audio.convert_to_opus_ogg_temp", return_value=converted), patch("whatsapp.requests.post", side_effect=post):
+                with patch("whatsapp.audio.convert_to_opus_ogg_temp", side_effect=convert), \
+                        patch("whatsapp.requests.post", side_effect=post) as sent:
                     whatsapp.send_audio_message("test", source)
+                self.assertEqual(sent.call_count, 1)
+                self.assertNotEqual(copies, [source], "ffmpeg must read the checked copy, not the path")
                 self.assertFalse(os.path.exists(converted))
+                self.assertFalse(os.path.exists(copies[0]), "the checked copy must be removed")
                 self.assertTrue(os.path.exists(source))
 
     def test_original_ogg_is_kept(self):

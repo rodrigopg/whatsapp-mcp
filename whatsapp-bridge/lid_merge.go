@@ -57,7 +57,8 @@ func migrateLIDChats(client *whatsmeow.Client, store *MessageStore, logger waLog
 	// A read receipt or reaction can arrive for a LID chat before any message, so it has no chats row.
 	lidChats, err := queryStrings(store.db, `SELECT jid FROM chats WHERE jid LIKE '%@lid'
 		UNION SELECT chat_jid FROM reactions WHERE chat_jid LIKE '%@lid'
-		UNION SELECT chat_jid FROM read_receipts WHERE chat_jid LIKE '%@lid'`)
+		UNION SELECT chat_jid FROM read_receipts WHERE chat_jid LIKE '%@lid'
+		UNION SELECT chat_jid FROM message_edits WHERE chat_jid LIKE '%@lid'`)
 	if err != nil {
 		logger.Warnf("LID migration: failed to list LID chats: %v", err)
 		return
@@ -182,6 +183,9 @@ func mergeLIDChat(db *sql.DB, lid, pn string) error {
 				AND julianday(l.timestamp) > julianday(p.timestamp))`,
 		`UPDATE OR IGNORE reactions SET chat_jid = ?2 WHERE chat_jid = ?1`,
 		`DELETE FROM reactions WHERE chat_jid = ?1`,
+		`INSERT INTO message_edits (chat_jid, message_id, is_from_me, sender, content, timestamp)
+			SELECT ?2, message_id, is_from_me, sender, content, timestamp FROM message_edits WHERE chat_jid = ?1` + messageEditConflictSQL,
+		`DELETE FROM message_edits WHERE chat_jid = ?1`,
 		`UPDATE OR IGNORE favorites SET chat_jid = ?2 WHERE chat_jid = ?1`, // a decision on the number wins
 		`DELETE FROM favorites WHERE chat_jid = ?1`,
 		`UPDATE matters SET chat_jid = ?2 WHERE chat_jid = ?1`,
@@ -192,6 +196,9 @@ func mergeLIDChat(db *sql.DB, lid, pn string) error {
 		if _, err := tx.Exec(q, lid, pn); err != nil {
 			return err
 		}
+	}
+	if _, err := tx.Exec(recordedEditSQL+" AND chat_jid = ?2", revokedContent, pn); err != nil {
+		return err
 	}
 	return tx.Commit()
 }
@@ -268,7 +275,8 @@ func migrateLIDSenders(client *whatsmeow.Client, db *sql.DB) (int, error) {
 	lidLike := `LIKE '%@` + types.HiddenUserServer + `'`
 	senders, err := queryStrings(db, `SELECT sender FROM messages WHERE sender != '' AND (sender `+lidLike+` OR sender NOT LIKE '%@%')
 		UNION SELECT voter FROM poll_votes WHERE voter != '' AND (voter `+lidLike+` OR voter NOT LIKE '%@%')
-		UNION SELECT sender FROM reactions WHERE sender `+lidLike)
+		UNION SELECT sender FROM reactions WHERE sender `+lidLike+`
+		UNION SELECT sender FROM message_edits WHERE sender != '' AND (sender `+lidLike+` OR sender NOT LIKE '%@%')`)
 	if err != nil {
 		return 0, err
 	}
@@ -365,10 +373,16 @@ func rewriteLIDAuthor(db *sql.DB, from, to string) error {
 			WHERE n.message_id = o.message_id AND n.chat_jid = o.chat_jid AND n.sender = ?2
 			AND julianday(n.timestamp) >= julianday(o.timestamp))`,
 		`UPDATE OR REPLACE reactions SET sender = ?2 WHERE sender = ?1`,
+		`INSERT INTO message_edits (chat_jid, message_id, is_from_me, sender, content, timestamp)
+			SELECT chat_jid, message_id, is_from_me, ?2, content, timestamp FROM message_edits WHERE sender = ?1` + messageEditConflictSQL,
+		`DELETE FROM message_edits WHERE sender = ?1`,
 	} {
 		if _, err := tx.Exec(q, from, to); err != nil {
 			return err
 		}
+	}
+	if _, err := tx.Exec(recordedEditSQL+" AND sender = ?2", revokedContent, to); err != nil {
+		return err
 	}
 	return tx.Commit()
 }
