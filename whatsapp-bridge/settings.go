@@ -147,7 +147,7 @@ var readOnlyAllowed = map[string]bool{
 	"/api/contacts/search": true, "/api/contacts/chats": true, "/api/contacts/last_interaction": true,
 	"/api/search_contacts": true, "/api/resolve_contact": true, "/api/is_on_whatsapp": true,
 	"/api/group_info": true, "/api/group_invite": true, "/api/poll_votes": true,
-	"/api/download": true, "/api/mediaretry": true, "/api/chat/backfill": true,
+	"/api/download": true, "/api/download/file": true, "/api/mediaretry": true, "/api/chat/backfill": true,
 	"/api/summary": true, "/api/matters/list": true, "/api/matters/record": true, "/api/matters/close": true,
 	"/api/matters/reopen": true, "/api/review/next": true, "/api/review/mark": true,
 	"/api/favorites/suggest": true, "/api/favorites/list": true,
