@@ -7,8 +7,9 @@ import (
 	"strings"
 )
 
-// maxAPIBody caps /api/ request bodies. They are JSON with text, JIDs and file paths, never file
-// bytes, so 1 MiB is far above any real request; without a cap one request could make the bridge
+// maxAPIBody caps /api/ request bodies. They are JSON with text, JIDs and file paths, so 1 MiB is
+// far above any real request (the one exception, /api/send/file, carries the file and is capped at
+// maxMediaBytes); without a cap one request could make the bridge
 // buffer an arbitrarily large body while decoding it.
 const maxAPIBody = 1 << 20
 
@@ -55,11 +56,15 @@ func apiGuard(token string, hosts map[string]bool, next http.Handler) http.Handl
 			next.ServeHTTP(w, r)
 			return
 		}
-		if r.ContentLength > maxAPIBody {
+		limit := int64(maxAPIBody)
+		if r.URL.Path == "/api/send/file" {
+			limit = maxMediaBytes // the file itself is the body; the handler caps it again
+		}
+		if r.ContentLength > limit {
 			http.Error(w, "Request body too large", http.StatusRequestEntityTooLarge)
 			return
 		}
-		r.Body = http.MaxBytesReader(w, r.Body, maxAPIBody)
+		r.Body = http.MaxBytesReader(w, r.Body, limit)
 		if token != "" {
 			if subtle.ConstantTimeCompare([]byte(r.Header.Get("Authorization")), []byte("Bearer "+token)) != 1 {
 				http.Error(w, "Unauthorized", http.StatusUnauthorized)

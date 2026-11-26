@@ -51,3 +51,29 @@ func TestAPIBodyLimit(t *testing.T) {
 		}
 	}
 }
+
+func TestAPIBodyLimitAllowsFileUpload(t *testing.T) {
+	var read int
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		read = len(b)
+	})
+	h := apiGuard("secret", apiHosts(""), next)
+	body := bytes.Repeat([]byte("a"), 2<<20)
+	r := httptest.NewRequest(http.MethodPost, "/api/send/file?recipient=1&filename=a.bin", bytes.NewReader(body))
+	r.Host = "127.0.0.1:8080"
+	r.Header.Set("Authorization", "Bearer secret")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, r)
+	if rec.Code != http.StatusOK || read != len(body) {
+		t.Fatalf("a 2 MiB file upload: code %d, read %d", rec.Code, read)
+	}
+	r = httptest.NewRequest(http.MethodPost, "/api/send", bytes.NewReader(body))
+	r.Host = "127.0.0.1:8080"
+	r.Header.Set("Authorization", "Bearer secret")
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, r)
+	if rec.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("a 2 MiB JSON request: code %d, want 413", rec.Code)
+	}
+}

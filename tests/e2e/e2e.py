@@ -401,6 +401,21 @@ class E2E(unittest.TestCase):
         self.assertEqual(got["media_type"], "audio")
         self.assertGreater(os.path.getsize(path), 500)
 
+    def test_11b_bytes_over_the_api(self):
+        """The routes an MCP server on another machine uses: the file goes up and comes back as bytes, no paths."""
+        before = set(self._media_ids())
+        time.sleep(SEND_GAP)
+        r = api("a", "POST", "/send/file", data=PNG,
+                params={"recipient": PHONE["b"], "filename": f"{TAG}-upload.png", "message": f"{TAG} upload"})
+        self.assertEqual(r.status_code, 200, r.text)
+        got = eventually(lambda: next((m for i, m in self._media_ids().items()
+                                       if i not in before and m["media_type"] == "image" and not m["is_from_me"]), None))
+        self.assertTrue(got, "B did not receive the uploaded image")
+        r = api("b", "POST", "/download/file", json={"message_id": got["id"], "chat_jid": got["chat_jid"]})
+        self.assertEqual(r.status_code, 200, r.text[:200])
+        self.assertEqual(r.headers.get("X-Content-Type-Options"), "nosniff")
+        self.assertEqual(hashlib.sha256(r.content).hexdigest(), hashlib.sha256(PNG).hexdigest(), "downloaded bytes differ")
+
     # ---- 12 reads --------------------------------------------------------------
     def test_12_read_endpoints(self):
         chat_a, chat_b, m = self.need("a_chat_b"), self.need("b_chat_a"), self.need("b_msg")
