@@ -10,6 +10,9 @@ follows the bridge's rule for media_path (whatsapp-bridge/media_path.go):
   hidden component (a name starting with ".") below that folder;
 - either way, a file directly inside the download folder (download_dir) may be sent: forwarding
   downloaded media works;
+- a bridge store found on the way (a folder holding whatsapp.db, when bridge and MCP server share
+  a machine) is never entered, whatever the roots say, except for its downloaded media
+  (store/<jid>/<file>), which may always be sent: the session keys and history stay put;
 - regular files only, at most MAX_MEDIA_BYTES; opened one component at a time without following
   links and checked on the open file, so a path swapped after the check is refused.
 
@@ -23,6 +26,7 @@ import tempfile
 MAX_MEDIA_BYTES = 100 << 20
 
 _CHANGED = "the path changed while it was being read"
+_STORE = "files inside the bridge store cannot be sent, except downloaded media"
 _HIDDEN = 'path has a hidden component (a name starting with "."); set MEDIA_ALLOWED_ROOTS to allow a folder'
 
 
@@ -69,13 +73,31 @@ def download_dir():
     return os.path.abspath(os.path.expanduser(configured)) if configured else os.path.join(_downloads_folders()[0], "whatsapp")
 
 
+def _store_rest(parts, i, is_store):
+    """Inside a bridge store only <jid>/<file> passes; returns whether hidden names are fine now."""
+    if not is_store:
+        return False
+    if len(parts) - i != 2 or "@" not in parts[i]:
+        raise MediaError(_STORE)
+    return True
+
+
+def _has_session_db(fd):
+    try:
+        os.stat("whatsapp.db", dir_fd=fd, follow_symlinks=False)
+        return True
+    except OSError:
+        return False
+
+
 def _open_walk(root, parts, hidden_ok):
     """Open root/parts... for reading without following any link; see the module docstring."""
     if os.open not in os.supports_dir_fd or not hasattr(os, "O_NOFOLLOW"):
-        return _open_plain(os.path.join(root, *parts), parts, hidden_ok)
+        return _open_plain(root, parts, hidden_ok)
     fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY)
     try:
         for i, name in enumerate(parts):
+            hidden_ok = _store_rest(parts, i, _has_session_db(fd)) or hidden_ok
             if not hidden_ok and name.startswith("."):
                 raise MediaError(_HIDDEN)
             want = os.stat(name, dir_fd=fd, follow_symlinks=False)
@@ -98,10 +120,13 @@ def _open_walk(root, parts, hidden_ok):
             os.close(fd)
 
 
-def _open_plain(path, parts, hidden_ok):
+def _open_plain(root, parts, hidden_ok):
     # ponytail: Windows has no dir_fd; open by name and compare with a stat taken before.
-    if not hidden_ok and any(p.startswith(".") for p in parts):
-        raise MediaError(_HIDDEN)
+    for i, name in enumerate(parts):
+        hidden_ok = _store_rest(parts, i, os.path.lexists(os.path.join(root, *parts[:i], "whatsapp.db"))) or hidden_ok
+        if not hidden_ok and name.startswith("."):
+            raise MediaError(_HIDDEN)
+    path = os.path.join(root, *parts)
     want = os.lstat(path)
     if not stat.S_ISREG(want.st_mode):
         raise MediaError("not a regular file")
@@ -115,6 +140,10 @@ def _open_plain(path, parts, hidden_ok):
 
 def _open_checked(path):
     resolved = os.path.realpath(os.path.abspath(path))
+    chat_dir = os.path.dirname(resolved)
+    store = os.path.dirname(chat_dir)
+    if "@" in os.path.basename(chat_dir) and os.path.lexists(os.path.join(store, "whatsapp.db")):
+        return _open_walk(store, [os.path.basename(chat_dir), os.path.basename(resolved)], True)
     downloads = os.path.realpath(download_dir())
     if os.path.dirname(resolved) == downloads:
         try:

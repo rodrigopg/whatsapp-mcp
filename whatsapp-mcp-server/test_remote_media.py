@@ -144,6 +144,27 @@ class RemoteMedia(unittest.TestCase):
                         self.assertNotIn(self.client, message)
         self.assertEqual(server.requests, [])
 
+    def test_a_bridge_store_on_this_machine_stays_closed(self):
+        # Bridge and MCP server on one machine (the remote connector does that), install under a root.
+        for base, env in ((os.path.join(self.tmp, "whatsapp-mcp", "whatsapp-bridge"), {}),
+                          (os.path.join(self.home, ".whatsapp-mcp", "whatsapp-bridge"), {"MEDIA_ALLOWED_ROOTS": self.home})):
+            store = os.path.join(base, "store")
+            refused = [self.write(os.path.join(store, n), b"secret") for n in
+                       ("whatsapp.db", "messages.db", "settings.json", os.path.join("backup", "whatsapp.db"),
+                        os.path.join("5511@s.whatsapp.net", "deeper", "x.jpg"))]
+            media = self.write(os.path.join(store, "5511@s.whatsapp.net", ".ID_x.jpg"), b"received")
+            with self.bridge() as server, patch.dict(os.environ, env):
+                for path in refused:
+                    with self.subTest(path=os.path.relpath(path, self.client)):
+                        ok, message = whatsapp.send_file("123", path)
+                        self.assertFalse(ok)
+                self.assertEqual(server.requests, [])
+                self.assertTrue(whatsapp.send_file("123", media)[0])
+            self.assertEqual(server.requests[0]["body"], b"received")
+        # Forwarding store media works whatever the roots say (an older bridge returned these paths).
+        with self.bridge() as server, patch.dict(os.environ, {"MEDIA_ALLOWED_ROOTS": self.downloads}):
+            self.assertTrue(whatsapp.send_file("123", media)[0])
+
     def test_configured_roots_replace_the_defaults(self):
         mine = self.write(os.path.join(self.client, "work", ".hidden-ok", "a.pdf"))
         downloaded = self.write(os.path.join(self.downloads, "b.pdf"))

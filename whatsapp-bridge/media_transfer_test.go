@@ -178,7 +178,7 @@ func TestDownloadFileRefusals(t *testing.T) {
 		}
 	}
 	w := httptest.NewRecorder()
-	h(w, httptest.NewRequest(http.MethodPost, "/api/download/file", strings.NewReader(strings.Repeat("x", 1<<20))))
+	h(w, httptest.NewRequest(http.MethodPost, "/api/download/file", strings.NewReader(`{"chat_jid":"`+chat+`","message_id":"`+strings.Repeat("x", 1<<20)+`"}`)))
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("oversized body: %d", w.Code)
 	}
