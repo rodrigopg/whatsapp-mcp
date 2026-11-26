@@ -2723,10 +2723,14 @@ type MessagesRequest struct {
 	Query             *string `json:"query"`
 	Limit             int     `json:"limit"`
 	Page              int     `json:"page"`
+	IncludeContext    bool    `json:"include_context"`
+	ContextBefore     int     `json:"context_before"`
+	ContextAfter      int     `json:"context_after"`
 }
 
 type MessagesResponse struct {
-	Messages []APIMessage `json:"messages"`
+	Messages        []APIMessage `json:"messages"`
+	ContextIncluded bool         `json:"context_included,omitempty"`
 }
 
 // errInvalidRequest marks errors that should surface as 400 (bad input) to
@@ -2834,20 +2838,81 @@ func listMessages(db *sql.DB, req MessagesRequest) (MessagesResponse, error) {
 	defer rows.Close()
 
 	messages := []APIMessage{}
+	seen := map[[2]string]bool{}
+	appendMessage := func(msg APIMessage) {
+		key := [2]string{msg.ChatJID, msg.ID}
+		if !seen[key] {
+			messages = append(messages, msg)
+			seen[key] = true
+		}
+	}
 	for rows.Next() {
 		msg, err := scanAPIMessageRow(rows)
 		if err != nil {
 			return MessagesResponse{}, err
 		}
-		messages = append(messages, msg)
+		appendMessage(msg)
 	}
 	if err := rows.Err(); err != nil {
 		return MessagesResponse{}, err
 	}
+	if err := rows.Close(); err != nil {
+		return MessagesResponse{}, err
+	}
+
+	if req.IncludeContext {
+		before, after := req.ContextBefore, req.ContextAfter
+		if before <= 0 {
+			before = 5
+		}
+		if after <= 0 {
+			after = 5
+		}
+		matched := messages
+		messages = []APIMessage{}
+		clear(seen)
+		for _, target := range matched {
+			for _, side := range []struct {
+				op, order string
+				limit     int
+			}{{"<", "DESC", before}, {">", "ASC", after}} {
+				if side.op == ">" {
+					appendMessage(target)
+				}
+				// #nosec G202 -- side.op and side.order come from the literal list above; values are bound
+				contextRows, err := db.Query(`
+					SELECT messages.timestamp, messages.sender, chats.name, messages.content,
+						messages.is_from_me, chats.jid, messages.id, messages.media_type
+					FROM messages JOIN chats ON chats.jid = messages.chat_jid
+					WHERE messages.chat_jid = ?1 AND julianday(messages.timestamp) `+side.op+`=
+						(SELECT julianday(timestamp) FROM messages WHERE id = ?2 AND chat_jid = ?1)
+						AND (julianday(messages.timestamp), messages.rowid) `+side.op+`
+						(SELECT julianday(timestamp), rowid FROM messages WHERE id = ?2 AND chat_jid = ?1)
+					ORDER BY julianday(messages.timestamp) `+side.order+`, messages.rowid `+side.order+`
+					LIMIT ?3`, target.ChatJID, target.ID, side.limit)
+				if err != nil {
+					return MessagesResponse{}, err
+				}
+				for contextRows.Next() {
+					msg, err := scanAPIMessageRow(contextRows)
+					if err != nil {
+						contextRows.Close()
+						return MessagesResponse{}, err
+					}
+					appendMessage(msg)
+				}
+				err = contextRows.Err()
+				contextRows.Close()
+				if err != nil {
+					return MessagesResponse{}, err
+				}
+			}
+		}
+	}
 	if err := loadReactions(db, messages); err != nil {
 		return MessagesResponse{}, err
 	}
-	return MessagesResponse{Messages: messages}, nil
+	return MessagesResponse{Messages: messages, ContextIncluded: req.IncludeContext}, nil
 }
 
 // ---- /api/message_context ----
