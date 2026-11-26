@@ -9,12 +9,14 @@ Transforma voice messages em `content` pesquisável. **Opt-in** — desligado at
 - **api**: OpenAI-compatible. `TRANSCRIPTION_API_KEY`, `TRANSCRIPTION_API_BASE` (default OpenAI; Groq = `https://api.groq.com/openai/v1`), `TRANSCRIPTION_API_MODEL` (`whisper-1` OpenAI; `whisper-large-v3` Groq — `whisper-1` na Groq dá 404). Áudio sai da máquina.
 - `TRANSCRIPTION_LANGUAGE` (ISO-639-1, default `pt`) vale pros dois engines; sem a variável, mantém português e o prompt original. Detecção automática só com `TRANSCRIPTION_LANGUAGE=auto` explícito.
 - `TRANSCRIPTION_PROMPT` enviesa ambos pra pontuação e termos de domínio; escrito na língua dos áudios. Default só para `pt`: `A seguir, a transcrição de um áudio. A transcrição deve ser precisa, com pontuação e capitalização corretas.` Outros idiomas e `auto` ficam sem prompt. Valor explícito substitui o prompt em qualquer idioma; valor vazio (`TRANSCRIPTION_PROMPT=""`) desativa.
+- `TRANSCRIPTION_TIMEOUT` (segundos, default `600`): limite de uma execução do whisper local; ffmpeg tem 120 s. Estourou = falha só daquele áudio, o sweep segue.
 - `engine_ready()` retorna `(ok, reason)`; main() não faz NADA (content='') se não configurado.
 
 ## Armadilhas
 
 - **medium transcreve foneticamente** ("Proteus" vs "Protheus"). **large-v3** é melhor pra termos TOTVS/Protheus/ADVPL. Este setup usa large-v3 + prompt de domínio.
 - `write_content` usa `UPDATE` (não INSERT OR REPLACE) — seguro. O que apaga transcrição é o **bridge no history sync** (ver bridge-go).
+- Arquivo já baixado em `store/<chat>/<id>_*` é reaproveitado se passa na integridade (SHA-256 do DB; sem hash, tamanho `file_length`; nunca vazio). Só arquivo ausente ou inválido é baixado de novo, e o sweep nunca apaga o cache: áudio que o CDN já descartou não se perde por um re-download falho.
 - Três estados de content: texto real / sentinela / '' (vazio = retry no próximo sweep).
 - `CDN_EXPIRY = 21 dias`. `_is_expired(ts)` discrimina falha transitória vs permanente. None/unparseable = assumido expirado (não deixa row em retry eterno).
 

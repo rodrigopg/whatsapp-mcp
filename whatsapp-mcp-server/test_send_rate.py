@@ -31,7 +31,7 @@ class SendRateTests(unittest.TestCase):
             lambda: whatsapp.send_audio_message("peer", "test.ogg"),
             lambda: whatsapp.create_group("test", ["peer"]),
         ):
-            with self.subTest(call=call), patch.object(whatsapp.os.path, "isfile", return_value=True), patch.object(
+            with self.subTest(call=call), patch.object(whatsapp.media_files, "read_outbound", return_value=b"audio"), patch.object(
                 whatsapp.requests, "post", return_value=rate_response()
             ) as post, patch.object(whatsapp.requests, "request", return_value=rate_response()) as request:
                 result = call()
