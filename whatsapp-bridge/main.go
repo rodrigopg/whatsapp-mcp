@@ -986,24 +986,7 @@ func handleMessage(client *whatsmeow.Client, messageStore *MessageStore, msg *ev
 	if err != nil {
 		logger.Warnf("Failed to store message: %v", err)
 	} else {
-		// Log message reception
-		timestamp := msg.Info.Timestamp.Format("2006-01-02 15:04:05")
-		direction := "←"
-		if msg.Info.IsFromMe {
-			direction = "→"
-		}
-
-		displayName := messageStore.ResolveName(senderJID)
-		if displayName == "" {
-			displayName = sender
-		}
-
-		// Log based on message type
-		if mediaType != "" {
-			fmt.Printf("[%s] %s %s: [%s: %s] %s\n", timestamp, direction, displayName, mediaType, filename, content)
-		} else if content != "" {
-			fmt.Printf("[%s] %s %s: %s\n", timestamp, direction, displayName, content)
-		}
+		logMessage(msg.Info.Timestamp, msg.Info.IsFromMe, chatJID, senderJID, mediaType, content)
 	}
 	return stored
 }
@@ -3597,8 +3580,6 @@ img{border:8px solid white;border-radius:8px;box-shadow:0 4px 20px rgba(0,0,0,.2
 			return
 		}
 
-		fmt.Println("Received request to send message", req.Message, req.MediaPath)
-
 		// Send the message
 		message, err := sendWhatsAppMessage(r.Context(), client, messageStore, req.Recipient, req.Message, req.MediaPath, req.ReplyToMessageID, req.Mentions)
 		if writeSendRateError(w, err) {
@@ -3608,7 +3589,7 @@ img{border:8px solid white;border-radius:8px;box-shadow:0 4px 20px rgba(0,0,0,.2
 		if !success {
 			message = err.Error()
 		}
-		fmt.Println("Message sent", success, message)
+		fmt.Printf("Send to %q: success=%v length=%d media=%v\n", req.Recipient, success, len(req.Message), req.MediaPath != "")
 		// Set response headers
 		w.Header().Set("Content-Type", "application/json")
 
