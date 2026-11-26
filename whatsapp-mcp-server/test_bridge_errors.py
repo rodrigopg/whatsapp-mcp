@@ -46,11 +46,11 @@ class BridgeErrors(unittest.IsolatedAsyncioTestCase):
             result = await self.call(load_main(), "list_messages", {"include_context": False})
         self.assertFalse(result.isError)
 
-    async def test_context_and_sender_lookup_failures_are_not_hidden(self):
+    async def test_sender_lookup_failures_are_not_hidden(self):
         message = {"id": "M1", "chat_jid": "chat", "sender": "sender", "content": "hello"}
         for include_context in (True, False):
             with self.subTest(include_context), patch.dict(whatsapp._sender_name_cache, clear=True), patch(
-                "whatsapp.requests.post", side_effect=[response(body={"messages": [message]}), response(500)]
+                "whatsapp.requests.post", side_effect=[response(body={"messages": [message], "context_included": True}), response(500)]
             ):
                 result = await self.call(load_main(), "list_messages", {"include_context": include_context})
                 self.assertTrue(result.isError)
