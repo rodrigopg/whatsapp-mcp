@@ -22,7 +22,9 @@ class TranscriptLogTest(unittest.TestCase):
                      patch.object(transcribe, "engine_ready", return_value=(True, "local")), \
                      patch.object(transcribe.sqlite3, "connect"), \
                      patch.object(transcribe, "DB_PATH", os.path.join(tempfile.gettempdir(), "absent", "messages.db")), \
-                     patch.object(transcribe, "pending_audios", return_value=[("msg", "chat", None, "2026-11-25")]), \
+                     patch.object(transcribe, "pending_audios", return_value=[("msg", "chat", None, None, "2026-11-25")]), \
+                     patch.object(transcribe, "cached_audio", return_value=None), \
+                     patch.object(transcribe, "valid_audio_file", return_value=True), \
                      patch.object(transcribe, "download", return_value=(audio.name, None, False)), \
                      patch.object(transcribe, "transcribe", return_value="PRIVATE TRANSCRIPT"), \
                      patch.object(transcribe, "write_content"), contextlib.redirect_stdout(output):
