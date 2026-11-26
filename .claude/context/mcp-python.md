@@ -61,3 +61,10 @@ não depender de `Z` sendo enviado.
 - `download_media` streams `/api/download/file` into `download_dir()` (`WHATSAPP_DOWNLOAD_DIR`, default `<Downloads>/whatsapp`, 0700, files 0600 via `mkstemp` + `os.replace`, name `<id>_<filename>` validated by `local_name`, home folder refused) and returns that local path.
 - A 404 on either new route means an older bridge: fall back to `media_path` / `/api/download` (bridge path). Tests: `test_remote_media.py` (fake bridge in another temp dir), `test_audio_cleanup.py`, `test_download_media_errors.py`.
 - Over the HTTP connector the MCP server runs on the bridge host: downloads now also land in that user's `~/Downloads/whatsapp` (a second copy next to `store/`), and the MCP env's `MEDIA_ALLOWED_ROOTS`, not the bridge's, decides what `send_file` may read.
+
+## Web connector links (`media_links.py`)
+
+- Only when `media_links.configured()` at import: HTTP transport + https `MCP_PUBLIC_URL` (which `oauth_from_env` only accepts together with OAuth, so the routes are FastMCP custom routes outside the OAuth guard: the URL token is the credential). `install_routes(mcp, base)` runs always; an empty base turns links off, which also resets state when tests reload `main`.
+- `download_media` adds `download_url` (`/media/d/<token>`, 15 min, many GETs, `FileResponse` attachment + nosniff + no-store) and `[result, Image]` for images <= 1 MB. `create_upload_link` (registered only with links on, so the e2e stdio `MCP_TOOLS` list does not change) -> `/media/u/<token>` page (nonce CSP, `fetch` raw body, `X-Filename` URL-encoded, checked by `media_files.plain_name`); first POST claims the link (single use, even when it fails); bytes streamed to `mkdtemp` 0700, 100 MB, 413; `send_file(upload_id=...)` -> `take_upload` -> `send_uploaded_file` deletes the file after the send attempt. Max 5 pending; sweeper thread every 60 s plus a sweep on each use.
+- `RedactLinks` filters `uvicorn.access` (args[2] is the path). Never log a link.
+- Reverse proxy must forward `/media/` too. No `file_url` (SSRF) on purpose.
