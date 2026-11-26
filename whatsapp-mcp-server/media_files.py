@@ -188,13 +188,19 @@ def read_outbound(path):
     return data
 
 
+def plain_name(name):
+    """name itself if it is a single plain file name, else MediaError: refused, never cleaned
+    (same rule as safeMediaPath and checkUploadName in the bridge)."""
+    if (not name or name in (".", "..") or len(name.encode()) > 255 or any(c in name for c in "/\\\0")
+            or any(ord(c) < 0x20 or ord(c) == 0x7f for c in name)):
+        raise MediaError("the media has an unsafe file name")
+    return name
+
+
 def local_name(message_id, filename):
-    """<message_id>_<filename>, as the bridge names it. Both come from WhatsApp: a value that is
-    not a plain name is refused, never cleaned (same rule as safeMediaPath in the bridge)."""
+    """<message_id>_<filename>, as the bridge names it. Both come from WhatsApp."""
     for part in (message_id, filename):
-        if (not part or part in (".", "..") or any(c in part for c in "/\\\0")
-                or any(ord(c) < 0x20 for c in part)):
-            raise MediaError("the media has an unsafe file name")
+        plain_name(part)
     if ".." in message_id or message_id.startswith("."):
         raise MediaError("the media has an unsafe file name")
     name = f"{message_id}_{filename}"

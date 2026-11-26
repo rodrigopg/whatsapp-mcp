@@ -4,7 +4,8 @@ import os
 import sys
 from functools import wraps
 from typing import List, Dict, Any, Optional
-from mcp.server.fastmcp import FastMCP
+from mcp.server.fastmcp import FastMCP, Image
+import media_links
 from mcp.server.transport_security import TransportSecuritySettings
 from mcp.types import ToolAnnotations
 from oauth import install_oauth_routes, oauth_from_env
@@ -20,6 +21,7 @@ from whatsapp import (
     get_message_context as whatsapp_get_message_context,
     send_message as whatsapp_send_message,
     send_file as whatsapp_send_file,
+    send_uploaded_file as whatsapp_send_uploaded_file,
     send_audio_message as whatsapp_audio_voice_message,
     send_voice_message as whatsapp_send_voice_message,
     download_media as whatsapp_download_media,
@@ -62,7 +64,9 @@ _INSTRUCTIONS = (
     "continue the text of the entry above, and \"From: Me\" is the user. "
     "File paths in send_file, send_audio_message and download_media are on this MCP server's own machine: the "
     "server uploads the file to the WhatsApp bridge and saves downloads here, even when the bridge runs on another "
-    "machine. Never copy files to the bridge's host or call its address yourself."
+    "machine. Never copy files to the bridge's host or call its address yourself. On a web connector (Claude web, "
+    "ChatGPT) the user is in a browser: give them download_media's download_url, and to send a file from their "
+    "device use create_upload_link and then send_file with its upload_id; never ask them for a path."
 )
 if _OAUTH:
     mcp = FastMCP("whatsapp", instructions=_INSTRUCTIONS, auth_server_provider=_OAUTH[0], auth=_OAUTH[1], transport_security=_NO_REBINDING_CHECK)
@@ -296,8 +300,9 @@ def send_message(
     }
 
 @write_tool
-def send_file(recipient: str, media_path: str) -> Dict[str, Any]:
+def send_file(recipient: str, media_path: str = "", upload_id: str = "") -> Dict[str, Any]:
     """Send a file such as a picture, raw audio, video or document via WhatsApp to the specified recipient. For group messages use the JID.
+    Give either media_path or upload_id.
     
     Args:
         recipient: The recipient - either a phone number with country code but no + or other symbols,
@@ -307,12 +312,21 @@ def send_file(recipient: str, media_path: str) -> Dict[str, Any]:
             runs elsewhere; never copy the file to the bridge's host. Allowed by default: the Downloads
             folder, the temp folder and files saved by download_media; other folders need
             MEDIA_ALLOWED_ROOTS in this MCP server's environment.
+        upload_id: Web connector only (Claude web, ChatGPT): the upload_id from create_upload_link, after the
+            user uploaded the file on that page. Sends that file once, then it is deleted.
     
     Returns:
         A dictionary containing success status and a status message
     """
-    
-    # Call the whatsapp_send_file function
+    if upload_id and media_path:
+        return {"success": False, "message": "Give either media_path or upload_id, not both"}
+    if upload_id:
+        try:
+            path, filename = media_links.take_upload(upload_id)
+        except media_links.LinkError as e:
+            return {"success": False, "message": str(e)}
+        success, status_message = whatsapp_send_uploaded_file(recipient, path, filename)
+        return {"success": success, "message": status_message}
     success, status_message = whatsapp_send_file(recipient, media_path)
     return {
         "success": success,
@@ -359,11 +373,13 @@ def send_voice_message(recipient: str, text: str, notice: str = "") -> Dict[str,
     }
 
 @write_tool
-def download_media(message_id: str, chat_jid: str) -> Dict[str, Any]:
+def download_media(message_id: str, chat_jid: str) -> Any:
     """Download media from a WhatsApp message to this machine (the one running this MCP server) and get its path.
 
     The file is saved in WHATSAPP_DOWNLOAD_DIR (default: a "whatsapp" folder inside Downloads), also when
     the bridge runs on another machine; open it directly and pass that path to send_file to forward it.
+    On the web connector (Claude web, ChatGPT) the result also has download_url, a link for the user
+    that works for 15 minutes: give it to them as is; a small image also comes back inline.
 
     Args:
         message_id: The ID of the message containing the media
@@ -375,16 +391,45 @@ def download_media(message_id: str, chat_jid: str) -> Dict[str, Any]:
     file_path, status_message = whatsapp_download_media(message_id, chat_jid)
 
     if file_path:
-        return {
+        result = {
             "success": True,
             "message": status_message,
             "file_path": file_path
         }
+        if not media_links.enabled():
+            return result
+        result["download_url"] = media_links.download_link(file_path, os.path.basename(file_path))
+        result["download_url_expires_in_minutes"] = media_links.LINK_TTL // 60
+        if os.path.splitext(file_path)[1].lower() in _INLINE_IMAGES and os.path.getsize(file_path) <= _INLINE_MAX:
+            return [result, Image(path=file_path)]
+        return result
     else:
         return {
             "success": False,
             "message": f"Failed to download media: {status_message}"
         }
+
+_INLINE_IMAGES = {".jpg", ".jpeg", ".png", ".gif", ".webp"}
+_INLINE_MAX = 1 << 20
+
+
+def create_upload_link() -> Dict[str, Any]:
+    """Web connector only (Claude web, ChatGPT): get a one-time page where the user uploads a file from their
+    own device, to send it with send_file(upload_id=...). Give upload_url to the user as is and wait until
+    they say it is uploaded. The link works once, for 15 minutes, up to 100 MB; the file is deleted after
+    it is sent or when it expires."""
+    try:
+        url, upload_id = media_links.upload_link()
+    except media_links.LinkError as e:
+        return {"success": False, "message": str(e)}
+    return {"success": True, "upload_url": url, "upload_id": upload_id,
+            "expires_in_minutes": media_links.LINK_TTL // 60}
+
+
+media_links.install_routes(mcp, media_links.configured())
+if media_links.enabled():
+    write_tool(create_upload_link)
+
 
 @write_tool
 def create_group(
