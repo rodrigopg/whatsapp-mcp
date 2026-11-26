@@ -22,7 +22,8 @@ import time
 import requests
 
 from transcribe import (DB_PATH, API_BASE, transcribe, write_content,
-                        engine_ready, SENTINEL_EMPTY, _bridge_auth_headers, cached_audio)
+                        engine_ready, SENTINEL_EMPTY, _bridge_auth_headers, cached_audio,
+                        log_content_enabled)
 
 # Default: where install.sh points the bridge's output (<install dir>/bridge.log).
 BRIDGE_LOG = os.environ.get("WHATSAPP_BRIDGE_LOG") or os.path.join(
@@ -39,7 +40,9 @@ RES_NOTONPHONE = "NOTONPHONE"
 RES_ERROR = "ERROR"
 
 
-def log(msg):
+def log(msg, content=None):
+    if content is not None and log_content_enabled():
+        msg += f" content={content!r}"
     print(f"[{time.strftime('%H:%M:%S')}] {msg}", flush=True)
 
 
@@ -197,7 +200,7 @@ def main():
             if text:
                 write_content(msg_id, chat_jid, text)
                 transcribed += 1
-                log(f"  {msg_id[:12]} ok: {text[:50]}...")
+                log(f"  {msg_id[:12]} ok ({len(text)} chars)", content=text)
             else:
                 write_content(msg_id, chat_jid, SENTINEL_EMPTY)
                 empty += 1
