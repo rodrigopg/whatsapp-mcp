@@ -96,7 +96,7 @@ success "Repository ready"
 # ── build Go bridge ──────────────────────────────────────────────────────────
 info "Building Go bridge…"
 cd "$INSTALL_DIR/whatsapp-bridge"
-go build -o whatsapp-bridge .
+go build -tags sqlite_fts5 -o whatsapp-bridge .
 success "Bridge compiled → $INSTALL_DIR/whatsapp-bridge/whatsapp-bridge"
 
 # ── install Python deps ──────────────────────────────────────────────────────

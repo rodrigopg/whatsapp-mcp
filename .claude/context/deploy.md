@@ -59,7 +59,7 @@ então isso passou a ser suportado sem inventar nada além do que já existia:
 
 ## Build
 
-- `cd whatsapp-bridge && go build -o whatsapp-bridge .` — recompilar após mudar main.go (binário stale não tem fixes).
+- `cd whatsapp-bridge && go build -tags sqlite_fts5 -o whatsapp-bridge .` — recompilar após mudar main.go (binário stale não tem fixes). Sem a tag, busca de mensagens usa LIKE; com FTS5, o índice é preenchido em background e a busca usa LIKE até ele ficar completo.
 - `go run main.go` = dev (binário temp em /var/folders, morre ao fechar terminal). Loga no terminal, NÃO em arquivo → recover_audios não funciona com go run.
 - Matar órfãos de porta: `lsof -ti TCP:${WHATSAPP_BRIDGE_PORT:-8080} | xargs kill`. `go run` spawna child `main` que sobrevive ao kill do pai.
 

@@ -34,7 +34,7 @@ stop() {
 }
 
 case "$1" in
-  build)   (cd ../../whatsapp-bridge && go build -o "$BIN" .) ;;
+  build)   (cd ../../whatsapp-bridge && go build -tags sqlite_fts5 -o "$BIN" .) ;;
   start)   for n in ${2:-a b}; do start "$n"; done ;;
   stop)    for n in ${2:-a b}; do stop "$n"; done ;;
   restart) for n in ${2:-a b}; do stop "$n"; sleep 2; start "$n"; done ;;
