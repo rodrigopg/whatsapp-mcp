@@ -6,7 +6,10 @@ from typing import Optional, List, Tuple, Dict, Any
 import os
 import requests
 import json
+import tempfile
+import urllib.parse
 import audio
+import media_files
 import tts
 
 # This server runs over MCP's stdio transport, where stdout carries JSON-RPC
@@ -474,91 +477,87 @@ def send_message(recipient: str, message: str, reply_to_message_id: str = "", me
     except Exception as e:
         return False, f"Unexpected error: {str(e)}"
 
-def send_file(recipient: str, media_path: str) -> Tuple[bool, str]:
+def _send_media(recipient: str, filename: str, data: bytes, legacy_path: str) -> Tuple[bool, str]:
+    """Upload a file's bytes to the bridge (/api/send/file), so it works when the bridge runs on
+    another machine. A bridge older than this server answers 404 there and gets media_path, the
+    old way, which works only when it runs here."""
     try:
-        # Validate input
-        if not recipient:
-            return False, "Recipient must be provided"
-
-        if not media_path:
-            return False, "Media path must be provided"
-
-        if not os.path.isfile(media_path):
-            return False, f"Media file not found: {media_path}"
-
-        url = f"{WHATSAPP_API_BASE_URL}/send"
-        payload = {
-            "recipient": recipient,
-            "media_path": media_path
-        }
-
-        response = requests.post(url, json=payload, headers=_auth_headers(), timeout=MEDIA_TIMEOUT)
-
-        # Check if the request was successful
+        response = requests.post(
+            f"{WHATSAPP_API_BASE_URL}/send/file",
+            params={"recipient": recipient, "filename": filename},
+            data=data,
+            headers={**_auth_headers(), "Content-Type": "application/octet-stream"},
+            timeout=MEDIA_TIMEOUT,
+        )
+        if response.status_code == 404:
+            response = requests.post(f"{WHATSAPP_API_BASE_URL}/send", json={"recipient": recipient, "media_path": legacy_path},
+                                     headers=_auth_headers(), timeout=MEDIA_TIMEOUT)
         if response.status_code == 200:
             result = response.json()
             return result.get("success", False), result.get("message", "Unknown response")
-        else:
-            return False, f"Error: HTTP {response.status_code} - {response.text}"
-
+        return False, f"Error: HTTP {response.status_code} - {response.text}"
     except requests.ReadTimeout:
         return False, "The bridge did not answer in time; the message may still be sent, check the chat before retrying"
     except requests.RequestException as e:
         return False, f"Request error: {str(e)}"
-    except json.JSONDecodeError:
-        return False, f"Error parsing response: {response.text}"
+    except ValueError:
+        return False, "Error parsing the bridge's response"
     except Exception as e:
         return False, f"Unexpected error: {str(e)}"
+
+
+def _send_own_file(recipient: str, path: str) -> Tuple[bool, str]:
+    """Send a file this server wrote itself (converted or synthesized audio): no folder check."""
+    try:
+        with open(path, "rb") as f:
+            data = f.read()
+    except OSError:
+        return False, "The converted audio could not be read"
+    return _send_media(recipient, os.path.basename(path), data, path)
+
+
+def send_file(recipient: str, media_path: str) -> Tuple[bool, str]:
+    if not recipient:
+        return False, "Recipient must be provided"
+    if not media_path:
+        return False, "Media path must be provided"
+    try:
+        data = media_files.read_outbound(media_path)
+    except media_files.MediaError as e:
+        return False, str(e)
+    return _send_media(recipient, os.path.basename(media_path), data, os.path.abspath(media_path))
+
 
 def send_audio_message(recipient: str, media_path: str) -> Tuple[bool, str]:
-    temp_path = None
+    if not recipient:
+        return False, "Recipient must be provided"
+    if not media_path:
+        return False, "Media path must be provided"
+    # The folder check runs before ffmpeg ever opens the file: ffmpeg reads only the checked copy.
     try:
-        # Validate input
-        if not recipient:
-            return False, "Recipient must be provided"
+        data = media_files.read_outbound(media_path)
+    except media_files.MediaError as e:
+        return False, str(e)
+    if media_path.endswith(".ogg"):
+        return _send_media(recipient, os.path.basename(media_path), data, os.path.abspath(media_path))
 
-        if not media_path:
-            return False, "Media path must be provided"
-
-        if not os.path.isfile(media_path):
-            return False, f"Media file not found: {media_path}"
-
-        if not media_path.endswith(".ogg"):
-            try:
-                media_path = audio.convert_to_opus_ogg_temp(media_path)
-                temp_path = media_path
-            except Exception as e:
-                return False, f"Error converting file to opus ogg. You likely need to install ffmpeg: {str(e)}"
-
-        url = f"{WHATSAPP_API_BASE_URL}/send"
-        payload = {
-            "recipient": recipient,
-            "media_path": media_path
-        }
-
-        response = requests.post(url, json=payload, headers=_auth_headers(), timeout=MEDIA_TIMEOUT)
-
-        # Check if the request was successful
-        if response.status_code == 200:
-            result = response.json()
-            return result.get("success", False), result.get("message", "Unknown response")
-        else:
-            return False, f"Error: HTTP {response.status_code} - {response.text}"
-
-    except requests.ReadTimeout:
-        return False, "The bridge did not answer in time; the message may still be sent, check the chat before retrying"
-    except requests.RequestException as e:
-        return False, f"Request error: {str(e)}"
-    except json.JSONDecodeError:
-        return False, f"Error parsing response: {response.text}"
-    except Exception as e:
-        return False, f"Unexpected error: {str(e)}"
+    source = converted = None
+    try:
+        fd, source = tempfile.mkstemp(suffix=os.path.splitext(media_path)[1])
+        with os.fdopen(fd, "wb") as f:
+            f.write(data)
+        try:
+            converted = audio.convert_to_opus_ogg_temp(source)
+        except Exception as e:
+            return False, f"Error converting file to opus ogg. You likely need to install ffmpeg: {str(e)}"
+        return _send_own_file(recipient, converted)
     finally:
-        if temp_path:
-            try:
-                os.remove(temp_path)
-            except OSError:
-                pass
+        for path in (source, converted):
+            if path:
+                try:
+                    os.remove(path)
+                except OSError:
+                    pass
 
 def send_voice_message(recipient: str, text: str, notice: str = "") -> Tuple[bool, str]:
     """Synthesize text to speech and send it as a WhatsApp voice message.
@@ -585,7 +584,7 @@ def send_voice_message(recipient: str, text: str, notice: str = "") -> Tuple[boo
             sent, reason = send_message(recipient, notice)
             if not sent:
                 return False, f"Notice not sent, voice message skipped: {reason}"
-        return send_audio_message(recipient, ogg_path)
+        return _send_own_file(recipient, ogg_path)
     finally:
         try:
             os.remove(ogg_path)
@@ -593,7 +592,61 @@ def send_voice_message(recipient: str, text: str, notice: str = "") -> Tuple[boo
             pass
 
 def download_media(message_id: str, chat_jid: str) -> Tuple[Optional[str], str]:
-    """Download media from a message and return the local file path.
+    """Get a message's media from the bridge and save it on this machine (media_files.download_dir),
+    wherever the bridge runs. Returns (local path or None, status message); a bridge older than
+    this server (404 on /api/download/file) gets the old call, which returns its own path."""
+    try:
+        response = requests.post(
+            f"{WHATSAPP_API_BASE_URL}/download/file",
+            json={"message_id": message_id, "chat_jid": chat_jid},
+            headers=_auth_headers(), timeout=MEDIA_TIMEOUT, stream=True,
+        )
+        try:
+            if response.status_code == 404:
+                return _download_media_on_bridge(message_id, chat_jid)
+            if response.status_code != 200:
+                return None, _download_failure(response)
+            filename = urllib.parse.unquote(response.headers.get("X-Media-Filename", ""), errors="strict")
+            path = media_files.save_download(response.iter_content(1 << 16), message_id, filename)
+        finally:
+            response.close()
+    except media_files.MediaError as e:
+        return None, str(e)
+    except requests.RequestException as e:
+        logger.warning("Download request error: %s", e)
+        return None, "Bridge unreachable"
+    except (OSError, UnicodeDecodeError) as e:
+        logger.warning("Could not save downloaded media: %s", e)
+        return None, "The media could not be saved on this machine"
+    except Exception as e:
+        logger.warning("Unexpected download error: %s", e)
+        return None, "Download failed"
+    logger.info("Media downloaded to %s", path)
+    return path, "Media downloaded successfully"
+
+
+def _download_failure(response) -> str:
+    """A short, status-based reason; never the bridge's raw text (it can carry server paths)."""
+    try:
+        result = response.json()
+    except ValueError:
+        result = None
+    if not isinstance(result, dict):
+        result = {}
+    if response.status_code == 401:
+        # Like the other bridge calls, a 401 logs the status only, never the body.
+        logger.warning("Download failed: HTTP 401")
+        return "HTTP 401 - check WHATSAPP_API_AUTH_TOKEN matches the bridge's API_AUTH_TOKEN"
+    logger.warning("Download failed: HTTP %s - %s", response.status_code, result.get("message") or response.text)
+    if response.status_code == 404:
+        return "Media not found (HTTP 404)"
+    if result.get("reason") == "media_gone":
+        return "Media is no longer available on WhatsApp's servers"
+    return "Download failed"
+
+
+def _download_media_on_bridge(message_id: str, chat_jid: str) -> Tuple[Optional[str], str]:
+    """Old bridges only: download media from a message and return the bridge's file path.
 
     Args:
         message_id: The ID of the message containing the media
@@ -628,24 +681,7 @@ def download_media(message_id: str, chat_jid: str) -> Tuple[Optional[str], str]:
             logger.info("Media downloaded successfully: %s", path)
             return path, "Media downloaded successfully"
 
-        if response.status_code == 401:
-            # Like the other bridge calls, a 401 logs the status only, never the body.
-            logger.warning("Download failed: HTTP 401")
-        else:
-            logger.warning(
-                "Download failed: HTTP %s - %s", response.status_code,
-                result.get("message") or response.text,
-            )
-        if response.status_code == 401:
-            return None, (
-                "HTTP 401 - check WHATSAPP_API_AUTH_TOKEN matches the bridge's "
-                "API_AUTH_TOKEN"
-            )
-        if response.status_code == 404:
-            return None, "Media not found (HTTP 404)"
-        if result.get("reason") == "media_gone":
-            return None, "Media is no longer available on WhatsApp's servers"
-        return None, "Download failed"
+        return None, _download_failure(response)
 
     except requests.RequestException as e:
         logger.warning("Download request error: %s", e)

@@ -54,3 +54,10 @@ não depender de `Z` sendo enviado.
 
 - `format_message` keeps every name on one line (`_one_line`), prefixes each further line of a message with `  | `, and shows `Me` only for `is_from_me`; a contact named "Me" gets its id appended. Only the first line of an entry starts with `[<time>]`. Do not print contact-controlled text raw in a new listing.
 - `_INSTRUCTIONS` (FastMCP `instructions`) and the first lines of `commands/{triage,morning,style,favorites}.md` tell the client that message text is never an instruction (`test_message_format_forgery.py` keeps both).
+
+## Media moves as bytes (`media_files.py`)
+
+- `send_file` / `send_audio_message` read the file on the MCP server's machine with `media_files.read_outbound` (same folder rule as the bridge's `readOutboundMedia`: `MEDIA_ALLOWED_ROOTS` from the MCP server's env replaces the defaults temp, `/tmp`, Downloads/XDG; files directly in `download_dir()` always pass; hidden names refused under defaults; `dir_fd` + `O_NOFOLLOW` walk with inode compare; 100 MB) and upload to `/api/send/file`. The check runs BEFORE ffmpeg: non-ogg audio is converted from a 0600 temp copy of the checked bytes. Audio the server made itself (converted, TTS) goes through `_send_own_file`, no check.
+- `download_media` streams `/api/download/file` into `download_dir()` (`WHATSAPP_DOWNLOAD_DIR`, default `<Downloads>/whatsapp`, 0700, files 0600 via `mkstemp` + `os.replace`, name `<id>_<filename>` validated by `local_name`, home folder refused) and returns that local path.
+- A 404 on either new route means an older bridge: fall back to `media_path` / `/api/download` (bridge path). Tests: `test_remote_media.py` (fake bridge in another temp dir), `test_audio_cleanup.py`, `test_download_media_errors.py`.
+- Over the HTTP connector the MCP server runs on the bridge host: downloads now also land in that user's `~/Downloads/whatsapp` (a second copy next to `store/`), and the MCP env's `MEDIA_ALLOWED_ROOTS`, not the bridge's, decides what `send_file` may read.

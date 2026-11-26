@@ -15,10 +15,15 @@ LEAK = "mkdir /srv/secret/store: permission denied"
 
 
 class FakeResponse:
+    headers = {}
+
     def __init__(self, status_code, json_body=None, text=""):
         self.status_code = status_code
         self._json = json_body
         self.text = text
+
+    def close(self):
+        pass
 
     def json(self):
         if self._json is None:
@@ -64,8 +69,11 @@ class DownloadMediaErrorTest(unittest.TestCase):
         self.assertIn("no longer available",
                       _download(FakeResponse(500, {"message": "x", "reason": "media_gone"}))[1])
 
-    def test_success_still_returns_the_path(self):
-        path, message = _download(FakeResponse(200, {"success": True, "path": "/tmp/x.ogg"}))
+    def test_old_bridge_still_returns_its_path(self):
+        # A bridge without /api/download/file answers 404 there; the old route gives its own path.
+        replies = iter([FakeResponse(404, text="404 page not found"), FakeResponse(200, {"success": True, "path": "/tmp/x.ogg"})])
+        with unittest.mock.patch.object(whatsapp.requests, "post", side_effect=lambda *a, **k: next(replies)):
+            path, message = whatsapp.download_media("MSG", "chat@s.whatsapp.net")
         self.assertEqual(path, "/tmp/x.ogg")
 
 
