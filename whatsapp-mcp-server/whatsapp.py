@@ -130,6 +130,8 @@ class Chat:
     last_message: Optional[str] = None
     last_sender: Optional[str] = None
     last_is_from_me: Optional[bool] = None
+    unread_count: int = 0
+    marked_as_unread: bool = False
 
     @property
     def is_group(self) -> bool:
@@ -171,6 +173,8 @@ def _chat_from_dict(d: dict) -> Chat:
         last_message=d.get("last_message"),
         last_sender=d.get("last_sender"),
         last_is_from_me=d.get("last_is_from_me"),
+        unread_count=d.get("unread_count", 0),
+        marked_as_unread=d.get("marked_as_unread", False),
     )
 
 
@@ -344,7 +348,8 @@ def list_chats(
     limit: int = 20,
     page: int = 0,
     include_last_message: bool = True,
-    sort_by: str = "last_active"
+    sort_by: str = "last_active",
+    unread_only: bool = False
 ) -> List[Chat]:
     """Get chats matching the specified criteria."""
     result = _api_post("/chats", {
@@ -353,6 +358,7 @@ def list_chats(
         "page": page,
         "include_last_message": include_last_message,
         "sort_by": sort_by,
+        "unread_only": unread_only,
     })
 
     return [_chat_from_dict(c) for c in result.get("chats", [])]

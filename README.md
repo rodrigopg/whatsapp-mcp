@@ -392,7 +392,7 @@ Go WhatsApp Bridge (whatsapp-bridge/)
 | `search_contacts` | Search contacts by name or phone number (LID-aware) |
 | `list_messages` | Retrieve messages with filters, pagination, context, readable stickers, locations and contact cards; reactions appear with their target message; WhatsApp statuses are excluded (statuses stored by older versions are deleted at bridge startup) |
 | `request_chat_history` | Ask the online phone for 1-50 messages before the oldest stored message (`count` defaults to 50); requires a nonempty chat. Results arrive asynchronously; check with `list_messages`. Wakes the phone; hidden by `MCP_READONLY`. REST: `POST /api/chat/backfill {"chat_jid":"...","count":50}` |
-| `list_chats` | List chats with metadata |
+| `list_chats` | List chats with a count of stored unread incoming messages (`unread_count`) and `marked_as_unread`; `unread_only` filters by unread messages or a manual unread badge |
 | `suggest_favorites` | Suggest favorites from last month's two-way conversations; only proposes |
 | `list_favorites` | The favorites: WhatsApp's Favorites list plus the suggestions you accepted |
 | `decide_favorite` | Record your decision for one contact: accept, reject or remove |
@@ -402,7 +402,7 @@ Go WhatsApp Bridge (whatsapp-bridge/)
 | `approve_chase_draft` | Send a draft in your name: only the exact text you approved goes out |
 | `discard_chase_draft` | Discard a pending draft; it is never sent later |
 | `list_matters` | Open matters (pending requests and commitments) with state, proof and why they need attention on a day |
-| `review_next_messages` | Messages not reviewed yet, with the open matters of those chats; never moves the cursor |
+| `review_next_messages` | Messages after the local review cursor, independently of WhatsApp read receipts, with the open matters of those chats; never moves the cursor |
 | `record_matter` | Record a matter citing the message that proves it (or add a mention to an existing one) |
 | `close_matter` | Close a matter: confirmed by a later message from the other person, or by the owner |
 | `reopen_matter` | Reopen a closed or expired matter when the conversation returns to it |
@@ -410,7 +410,9 @@ Go WhatsApp Bridge (whatsapp-bridge/)
 | `send_contact` | Send a contact as a native contact card (vCard) |
 | `vote_in_poll` | Cast (or retract) your own vote in a poll |
 | `list_active_chats` | Who you talked to in a period (e.g. one day): one row per conversation with first/last time, count, last-message snippet and a link |
-| `get_chat` | Get info about a specific chat |
+| `get_chat` | Get chat metadata, including `unread_count` from WhatsApp read receipts and the separate `marked_as_unread` badge |
+| `mark_chat_as_read` | Send read receipts and clear the chat unread badge; update local read state after each successful WhatsApp operation |
+| `mark_chat_as_unread` | Set the WhatsApp and local unread badge without changing message read receipts |
 | `get_direct_chat_by_contact` | Find a direct chat by phone number (LID-aware) |
 | `get_contact_chats` | All chats involving a contact |
 | `get_last_interaction` | Most recent message with a contact |

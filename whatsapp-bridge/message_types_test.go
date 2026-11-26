@@ -334,8 +334,8 @@ func TestStatusBroadcastStartupCleanup(t *testing.T) {
 	s := setupChatStore(t)
 	// Seed the old schema's status rows directly; migration must handle existing installs.
 	for _, q := range []string{
-		`INSERT INTO chats VALUES ('status@broadcast', 'Status', '2026-10-01')`,
-		`INSERT INTO chats VALUES ('normal', 'Normal', '2026-10-01')`,
+		`INSERT INTO chats (jid, name, last_message_time) VALUES ('status@broadcast', 'Status', '2026-10-01')`,
+		`INSERT INTO chats (jid, name, last_message_time) VALUES ('normal', 'Normal', '2026-10-01')`,
 		`INSERT INTO messages (id, chat_jid, content) VALUES ('status', 'status@broadcast', 'old status')`,
 		`INSERT INTO messages (id, chat_jid, content) VALUES ('normal', 'normal', 'keep')`,
 		`INSERT INTO message_mentions VALUES ('status@broadcast', 'status', '111')`,
