@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -159,6 +161,24 @@ func TestStoreDirLIDMedia(t *testing.T) {
 	migrateLIDChats(lidClient(map[string]string{"999": "222"}), s, waLog.Noop)
 	if data, err := os.ReadFile(filepath.Join(root, testPN, "msg_audio.ogg")); err != nil || string(data) != "media" {
 		t.Fatalf("LID media not moved: %q, %v", data, err)
+	}
+}
+
+// /api/download/file serves media from the configured store.
+func TestStoreDirDownloadFile(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "data")
+	t.Setenv("WHATSAPP_STORE_DIR", root)
+	s := setupChatStore(t)
+	const chat, id = "5511@s.whatsapp.net", "ABC123"
+	seedMedia(t, s, chat, id, "photo.jpg")
+	writeStoreFile(t, filepath.Join(root, chat, id+"_photo.jpg"), "received")
+	h := downloadFileHandler(func(id, chat string) (bool, string, string, string, error) {
+		return downloadMedia(nil, s, id, chat)
+	})
+	w := httptest.NewRecorder()
+	h(w, downloadRequest(id, chat))
+	if w.Code != http.StatusOK || w.Body.String() != "received" {
+		t.Fatalf("status %d body %q", w.Code, w.Body)
 	}
 }
 

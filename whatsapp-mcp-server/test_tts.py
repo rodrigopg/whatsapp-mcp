@@ -7,6 +7,7 @@ import sys
 import tempfile
 import threading
 import unittest
+import urllib.parse
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from unittest.mock import patch
 
@@ -69,6 +70,14 @@ def make_wav_bytes():
         w.setframerate(22050)
         w.writeframes(b"".join(struct.pack("<h", int(8000 * math.sin(i / 20.0))) for i in range(11025)))
     return buf.getvalue()
+
+
+def parse_request(req):
+    """(path, fields): JSON body for /api/send, query string for the /api/send/file upload."""
+    path, _, query = req["path"].partition("?")
+    if path == "/api/send/file":
+        return path, {k: v[0] for k, v in urllib.parse.parse_qs(query).items()}
+    return path, json.loads(req["body"])
 
 
 class FakeServer:
@@ -317,10 +326,8 @@ class TestSendVoiceMessage(TTSTestCase):
         seen = []
 
         def respond(req):
-            payload = json.loads(req["body"])
-            media = payload.get("media_path")
-            seen.append({"path": req["path"], "payload": payload,
-                         "existed": bool(media) and os.path.isfile(media)})
+            path, payload = parse_request(req)
+            seen.append({"path": path, "payload": payload, "data": req["body"] if path == "/api/send/file" else b""})
             return 200, "application/json", json.dumps({"success": True, "message": "Message sent"}).encode()
 
         server = FakeServer(respond)
@@ -346,11 +353,10 @@ class TestSendVoiceMessage(TTSTestCase):
         self.assertTrue(success, message)
         self.assertEqual(len(server.seen), 1)
         sent = server.seen[0]
-        self.assertEqual(sent["path"], "/api/send")
+        self.assertEqual(sent["path"], "/api/send/file")
         self.assertEqual(sent["payload"]["recipient"], self.RECIPIENT)
-        self.assertTrue(sent["payload"]["media_path"].endswith(".ogg"))
-        self.assertTrue(sent["existed"], "the .ogg must exist when the bridge is called")
-        self.assertFalse(os.path.exists(sent["payload"]["media_path"]))
+        self.assertTrue(sent["payload"]["filename"].endswith(".ogg"))
+        self.assertTrue(sent["data"].startswith(b"OggS"), "the bridge must get the audio bytes")
         self.assertNoLeftovers()
 
     @needs_ffmpeg
@@ -433,18 +439,18 @@ class TestNotice(TTSTestCase):
         seen = []
 
         def respond(req):
-            payload = json.loads(req["body"])
+            _, payload = parse_request(req)
             seen.append({"payload": payload, "marker_existed": os.path.exists(marker)})
             return 200, "application/json", json.dumps({"success": True, "message": "Message sent"}).encode()
 
         with FakeServer(respond) as server, self.local(), patch.dict(os.environ, {"FAKE_TTS_MARKER": marker}):
             success, message = self.call(server, "Olá", "aviso")
         self.assertTrue(success, message)
-        self.assertEqual([r["path"] for r in server.requests], ["/api/send", "/api/send"])
+        self.assertEqual([r["path"].split("?")[0] for r in server.requests], ["/api/send", "/api/send/file"])
         first, second = seen
         self.assertEqual(first["payload"]["message"], "aviso")
-        self.assertNotIn("media_path", first["payload"])
-        self.assertTrue(second["payload"]["media_path"].endswith(".ogg"))
+        self.assertNotIn("filename", first["payload"])
+        self.assertTrue(second["payload"]["filename"].endswith(".ogg"))
         self.assertTrue(first["marker_existed"], "the speech must be generated before the notice is sent")
         self.assertNoLeftovers()
 
@@ -459,8 +465,8 @@ class TestNotice(TTSTestCase):
     @needs_ffmpeg
     def test_notice_rejected_by_bridge_skips_audio(self):
         def respond(req):
-            payload = json.loads(req["body"])
-            if payload.get("media_path"):
+            path, _ = parse_request(req)
+            if path == "/api/send/file":
                 return 200, "application/json", json.dumps({"success": True, "message": "Message sent"}).encode()
             return 200, "application/json", json.dumps({"success": False, "message": "notice refused"}).encode()
 
@@ -478,7 +484,7 @@ class TestNotice(TTSTestCase):
             success, message = self.call(server, "Olá", "")
         self.assertTrue(success, message)
         self.assertEqual(len(server.seen), 1)
-        self.assertTrue(server.seen[0]["payload"]["media_path"].endswith(".ogg"))
+        self.assertTrue(server.seen[0]["payload"]["filename"].endswith(".ogg"))
         self.assertNotIn("message", server.seen[0]["payload"])
         self.assertNoLeftovers()
 
