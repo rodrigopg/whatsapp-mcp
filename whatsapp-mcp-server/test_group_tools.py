@@ -5,7 +5,7 @@ import whatsapp
 
 
 def resp(body):
-    r = MagicMock()
+    r = MagicMock(status_code=200)
     r.json.return_value = body
     return r
 
@@ -20,7 +20,7 @@ class TestGroupTools(unittest.TestCase):
 
     def test_invite_failure_returns_no_link(self):
         with patch("whatsapp._api_request", return_value=resp({"success": False, "message": "no", "link": "L"})):
-            self.assertEqual(whatsapp.get_group_invite_link("1@g.us"), (False, "no", None))
+            self.assertEqual(whatsapp.get_group_invite_link("1@g.us"), (False, "Bridge operation failed; check the tool arguments and bridge status", None))
 
     def test_required_args(self):
         self.assertFalse(whatsapp.get_group_invite_link(" ")[0])

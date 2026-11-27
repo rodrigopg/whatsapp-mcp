@@ -5,7 +5,7 @@ from dataclasses import dataclass, field
 from typing import Optional, List, Tuple, Dict, Any
 import os
 import requests
-import json
+import math
 import tempfile
 import urllib.parse
 import audio
@@ -31,6 +31,76 @@ SEND_TIMEOUT = 120
 # Media is uploaded or downloaded inside the same request.
 MEDIA_TIMEOUT = 300
 
+# Only literal REST errors from the Go handlers and their validators are public.
+# Formatted errors can contain stored messages, names or host paths.
+_PUBLIC_BRIDGE_ERRORS = {
+    "Forbidden: browser requests are not accepted without API_AUTH_TOKEN",
+    "Forbidden: unexpected Host header (see API_ALLOWED_HOSTS)",
+    "Group name is required",
+    "Group name must be 25 characters or fewer",
+    "Invalid JID",
+    "Invalid action: must be one of add, remove, promote, demote",
+    "Invalid group_jid: must be a @g.us JID",
+    "Invalid invite link or code",
+    'Invalid media: must be one of "", audio',
+    "Invalid participant: empty string",
+    "Invalid request format",
+    "Invalid request: archive (true|false) required",
+    "Invalid request: at least one of name, topic, announce, locked required",
+    "Invalid request: chat_jid and message_id required",
+    "Invalid request: chat_jid is required",
+    "Invalid request: chat_jid required",
+    "Invalid request: chat_jid, message_id and options required",
+    "Invalid request: chat_jid, question and options required",
+    "Invalid request: group_jid and participants required",
+    "Invalid request: group_jid required",
+    "Invalid request: link required",
+    "Invalid request: new_text must not be empty",
+    "Invalid request: phones required",
+    "Invalid state: must be one of composing, paused",
+    "Message ID and Chat JID are required",
+    "Message or media path is required",
+    "Method not allowed",
+    "No stored messages for this chat; cannot request earlier history",
+    "No valid participants after parsing",
+    "QR not available",
+    "Recipient is required",
+    "a message from the owner never closes a matter",
+    "as_of is required: an ISO-8601 instant with offset, e.g. 2026-10-12T07:00:00-03:00",
+    "by must be confirmed|owner",
+    "certainty must be clear|uncertain",
+    "chat_jid and expect_name_prefix are required",
+    "chat_jid is required",
+    "chat_jid must be a user or group JID",
+    "count must be between 1 and 50",
+    "deadline must be a date YYYY-MM-DD",
+    "decision must be accept|reject|remove",
+    "expect_name_prefix is required",
+    "invalid group message sender: expected a PN or LID author",
+    "jid is required",
+    "mentions are only supported for text messages",
+    "message_id is required",
+    "mode must be full (default) or recovery",
+    "name must be one of: regular, regular_low, regular_high, critical_block, critical_unblock_low",
+    "owed_by must be owner|other and origin request|demand|promise|event",
+    "phone required",
+    "poll message not found in local history",
+    "poll not found in the local database",
+    "poll not found: this bridge has not seen that poll",
+    "query is required",
+    "query required",
+    "recipient, name and phone_number are required",
+    "reply_to_message_id is only supported for text messages",
+    "sender_jid is required",
+    "sender_phone_number is required",
+    "the author is no longer in the group and the bridge does not know their address in it, so WhatsApp would drop this action",
+    "the owner's own chat is not supported",
+    "unknown group message sender: message not found in this chat",
+    "unknown group message sender: message store unavailable",
+    "unknown group message sender: stored author is empty or identifies the group",
+    "up_to must be an ISO-8601 instant with offset",
+}
+
 # Cache of sender_jid -> resolved name, avoids one HTTP round trip per message
 # when formatting a batch of messages (format_message is called per-message).
 _sender_name_cache: Dict[str, str] = {}
@@ -51,40 +121,70 @@ def _auth_headers() -> Dict[str, str]:
 
 
 def _api_request(method: str, path: str, timeout: int = REQUEST_TIMEOUT, **kwargs) -> requests.Response:
-    """GET/POST to the bridge with auth header + timeout, raising requests.RequestException
-    on 401 with an actionable message. Used by the Tuple[bool, str, ...]-returning action
-    functions below, which need the raw Response (they parse .json() and build their own
-    return tuple) rather than _api_post's Optional[dict] shape."""
     url = f"{WHATSAPP_API_BASE_URL}{path}"
-    response = requests.request(method, url, headers=_auth_headers(), timeout=timeout, **kwargs)
-    if response.status_code == 401:
-        raise requests.RequestException(
-            "HTTP 401 - check WHATSAPP_API_AUTH_TOKEN matches the bridge's API_AUTH_TOKEN"
-        )
-    return response
+    headers = {**kwargs.pop("headers", {}), **_auth_headers()}
+    try:
+        if method == "POST":
+            return requests.post(url, headers=headers, timeout=timeout, **kwargs)
+        return requests.request(method, url, headers=headers, timeout=timeout, **kwargs)
+    except requests.Timeout as error:
+        logger.warning("Bridge %s %s timed out (%s)", method, path, type(error).__name__)
+        raise BridgeError("Bridge request timed out; the operation may still complete, check before retrying") from None
+    except requests.RequestException as error:
+        logger.warning("Bridge %s %s unavailable (%s)", method, path, type(error).__name__)
+        raise BridgeError("Bridge unavailable; check that it is running and reachable") from None
+
+
+def _bridge_result(response: requests.Response, require_success: bool = False) -> dict:
+    status = response.status_code
+    invalid_json = False
+    try:
+        result = response.json()
+    except ValueError:
+        result = None
+        invalid_json = True
+    if status != 200:
+        logger.warning("Bridge request failed: HTTP %s", status)
+        reason = {
+            400: "Invalid bridge request; check the tool arguments",
+            401: "Bridge authentication failed; check WHATSAPP_API_AUTH_TOKEN",
+            403: "Bridge access denied; check API_AUTH_TOKEN and API_ALLOWED_HOSTS",
+            404: "Requested chat, message or resource not found",
+            429: "Bridge rate limit reached; retry later",
+            503: "WhatsApp is not connected; check the bridge connection",
+        }.get(status, "Bridge request failed")
+        detail = result.get("error") or result.get("message") if isinstance(result, dict) else None
+        if invalid_json:
+            detail = response.text.rstrip("\n")
+        if (400 <= status < 500 and status not in (401, 429)
+                and isinstance(detail, str) and detail in _PUBLIC_BRIDGE_ERRORS):
+            reason = detail
+        if status == 429:
+            retry = result.get("retry_after") if isinstance(result, dict) else None
+            if retry is None:
+                retry = response.headers.get("Retry-After")
+                if isinstance(retry, str) and retry.isascii() and retry.isdigit() and len(retry) < 10:
+                    retry = int(retry)
+            if type(retry) in (int, float) and 0 <= retry < 1e9 and math.isfinite(retry):
+                reason = f"Bridge rate limit reached; retry in {retry:g} seconds"
+        raise BridgeError(f"{reason} (HTTP {status})", status)
+    if invalid_json:
+        logger.warning("Bridge returned invalid JSON: HTTP %s", status)
+        raise BridgeError("Bridge returned invalid JSON")
+    if not isinstance(result, dict):
+        logger.warning("Bridge returned an invalid response: HTTP %s type=%s", status, type(result).__name__)
+        raise BridgeError("Bridge returned an invalid response")
+    if (require_success and result.get("success") is not True) or result.get("success") is False or result.get("error"):
+        # Error bodies can echo message content, so log only diagnostic metadata.
+        logger.warning("Bridge operation failed: HTTP %s success=%s error_type=%s", status,
+                       result.get("success") is True, type(result.get("error")).__name__)
+        raise BridgeError("Bridge operation failed; check the tool arguments and bridge status")
+    return result
 
 
 def _api_post(path: str, payload: dict, timeout: int = REQUEST_TIMEOUT) -> dict:
     """POST to the bridge, raising a safe error instead of fabricating an empty result."""
-    try:
-        url = f"{WHATSAPP_API_BASE_URL}{path}"
-        response = requests.post(url, json=payload, headers=_auth_headers(), timeout=timeout)
-    except requests.Timeout:
-        raise BridgeError("Bridge request timed out") from None
-    except requests.RequestException:
-        raise BridgeError("Bridge unavailable; check that it is running and reachable") from None
-
-    if response.status_code == 401:
-        raise BridgeError("Bridge authentication failed (HTTP 401); check WHATSAPP_API_AUTH_TOKEN")
-    if response.status_code != 200:
-        raise BridgeError(f"Bridge request failed (HTTP {response.status_code})", response.status_code)
-    try:
-        result = response.json()
-    except ValueError:
-        raise BridgeError("Bridge returned invalid JSON") from None
-    if not isinstance(result, dict):
-        raise BridgeError("Bridge returned an invalid response")
-    return result
+    return _bridge_result(_api_request("POST", path, timeout=timeout, json=payload))
 
 
 def _strip_accents(text: Optional[str]) -> Optional[str]:
@@ -447,7 +547,6 @@ def send_message(recipient: str, message: str, reply_to_message_id: str = "", me
         if not recipient:
             return False, "Recipient must be provided"
 
-        url = f"{WHATSAPP_API_BASE_URL}/send"
         payload = {
             "recipient": recipient,
             "message": message,
@@ -457,51 +556,38 @@ def send_message(recipient: str, message: str, reply_to_message_id: str = "", me
         if mentions:
             payload["mentions"] = mentions
 
-        response = requests.post(url, json=payload, headers=_auth_headers(), timeout=SEND_TIMEOUT)
+        response = _api_request("POST", "/send", timeout=SEND_TIMEOUT, json=payload)
 
-        # Check if the request was successful
-        if response.status_code == 200:
-            result = response.json()
-            return result.get("success", False), result.get("message", "Unknown response")
-        else:
-            return False, f"Error: HTTP {response.status_code} - {response.text}"
+        result = _bridge_result(response, require_success=True)
+        return result.get("success", False), result.get("message", "Unknown response")
 
-    except requests.ReadTimeout:
-        return False, "The bridge did not answer in time; the message may still be sent, check the chat before retrying"
-    except requests.RequestException as e:
-        return False, f"Request error: {str(e)}"
-    except json.JSONDecodeError:
-        return False, f"Error parsing response: {response.text}"
+    except BridgeError as e:
+        return False, str(e)
     except Exception as e:
-        return False, f"Unexpected error: {str(e)}"
+        logger.warning("Bridge operation failed (%s)", type(e).__name__)
+        return False, "Unexpected bridge operation error; check server logs"
 
 def _send_media(recipient: str, filename: str, data: bytes, legacy_path: str) -> Tuple[bool, str]:
     """Upload a file's bytes to the bridge (/api/send/file), so it works when the bridge runs on
     another machine. A bridge older than this server answers 404 there and gets media_path, the
     old way, which works only when it runs here."""
     try:
-        response = requests.post(
-            f"{WHATSAPP_API_BASE_URL}/send/file",
+        response = _api_request(
+            "POST", "/send/file", timeout=MEDIA_TIMEOUT,
             params={"recipient": recipient, "filename": filename},
             data=data,
-            headers={**_auth_headers(), "Content-Type": "application/octet-stream"},
-            timeout=MEDIA_TIMEOUT,
+            headers={"Content-Type": "application/octet-stream"},
         )
         if response.status_code == 404:
-            response = requests.post(f"{WHATSAPP_API_BASE_URL}/send", json={"recipient": recipient, "media_path": legacy_path},
-                                     headers=_auth_headers(), timeout=MEDIA_TIMEOUT)
-        if response.status_code == 200:
-            result = response.json()
-            return result.get("success", False), result.get("message", "Unknown response")
-        return False, f"Error: HTTP {response.status_code} - {response.text}"
-    except requests.ReadTimeout:
-        return False, "The bridge did not answer in time; the message may still be sent, check the chat before retrying"
-    except requests.RequestException as e:
-        return False, f"Request error: {str(e)}"
-    except ValueError:
-        return False, "Error parsing the bridge's response"
+            response = _api_request("POST", "/send", timeout=MEDIA_TIMEOUT,
+                                    json={"recipient": recipient, "media_path": legacy_path})
+        result = _bridge_result(response, require_success=True)
+        return result.get("success", False), result.get("message", "Unknown response")
+    except BridgeError as e:
+        return False, str(e)
     except Exception as e:
-        return False, f"Unexpected error: {str(e)}"
+        logger.warning("Bridge operation failed (%s)", type(e).__name__)
+        return False, "Unexpected bridge operation error; check server logs"
 
 
 def _send_own_file(recipient: str, path: str) -> Tuple[bool, str]:
@@ -717,18 +803,14 @@ def create_group(
             return False, "Group name is required", None
         if not participants:
             return False, "At least one participant is required", None
-        url = f"{WHATSAPP_API_BASE_URL}/create_group"
         payload = {
             "name": name,
             "participants": participants,
             "is_community": is_community,
             "community_parent_jid": community_parent_jid,
         }
-        response = requests.post(url, json=payload, headers=_auth_headers(), timeout=SEND_TIMEOUT)
-        try:
-            result = response.json()
-        except json.JSONDecodeError:
-            return False, f"Error parsing response: {response.text}", None
+        response = _api_request("POST", "/create_group", timeout=SEND_TIMEOUT, json=payload)
+        result = _bridge_result(response, require_success=True)
         success = bool(result.get("success", False))
         message = result.get("message", "Unknown response")
         details = {
@@ -737,12 +819,11 @@ def create_group(
             "participant_count": result.get("participant_count"),
         } if success else None
         return success, message, details
-    except requests.ReadTimeout:
-        return False, "The bridge did not answer in time; the group may still be created, check before retrying", None
-    except requests.RequestException as e:
-        return False, f"Request error: {str(e)}", None
+    except BridgeError as e:
+        return False, str(e), None
     except Exception as e:
-        return False, f"Unexpected error: {str(e)}", None
+        logger.warning("Bridge operation failed (%s)", type(e).__name__)
+        return False, "Unexpected bridge operation error; check server logs", None
 
 
 def leave_group(jid: str) -> Tuple[bool, str]:
@@ -750,15 +831,13 @@ def leave_group(jid: str) -> Tuple[bool, str]:
         if not jid or not jid.strip():
             return False, "Group JID is required"
         response = _api_request("POST", "/leave_group", json={"jid": jid})
-        try:
-            result = response.json()
-        except json.JSONDecodeError:
-            return False, f"Error parsing response: {response.text}"
+        result = _bridge_result(response, require_success=True)
         return bool(result.get("success", False)), result.get("message", "Unknown response")
-    except requests.RequestException as e:
-        return False, f"Request error: {str(e)}"
+    except BridgeError as e:
+        return False, str(e)
     except Exception as e:
-        return False, f"Unexpected error: {str(e)}"
+        logger.warning("Bridge operation failed (%s)", type(e).__name__)
+        return False, "Unexpected bridge operation error; check server logs"
 
 
 def mark_chat_read(chat_jid: str, message_ids: List[str], sender_jid: str = "", timestamp: int = 0) -> Tuple[bool, str]:
@@ -771,15 +850,13 @@ def mark_chat_read(chat_jid: str, message_ids: List[str], sender_jid: str = "", 
         if timestamp:
             payload["timestamp"] = timestamp
         response = _api_request("POST", "/mark_chat_read", json=payload)
-        try:
-            result = response.json()
-        except json.JSONDecodeError:
-            return False, f"Error parsing response: {response.text}"
+        result = _bridge_result(response, require_success=True)
         return bool(result.get("success", False)), result.get("message", "Unknown response")
-    except requests.RequestException as e:
-        return False, f"Request error: {str(e)}"
+    except BridgeError as e:
+        return False, str(e)
     except Exception as e:
-        return False, f"Unexpected error: {str(e)}"
+        logger.warning("Bridge operation failed (%s)", type(e).__name__)
+        return False, "Unexpected bridge operation error; check server logs"
 
 
 def mark_chat_unread(chat_jid: str) -> Tuple[bool, str]:
@@ -787,15 +864,13 @@ def mark_chat_unread(chat_jid: str) -> Tuple[bool, str]:
         if not chat_jid or not chat_jid.strip():
             return False, "chat_jid is required"
         response = _api_request("POST", "/mark_chat_unread", json={"chat_jid": chat_jid})
-        try:
-            result = response.json()
-        except json.JSONDecodeError:
-            return False, f"Error parsing response: {response.text}"
+        result = _bridge_result(response, require_success=True)
         return bool(result.get("success", False)), result.get("message", "Unknown response")
-    except requests.RequestException as e:
-        return False, f"Request error: {str(e)}"
+    except BridgeError as e:
+        return False, str(e)
     except Exception as e:
-        return False, f"Unexpected error: {str(e)}"
+        logger.warning("Bridge operation failed (%s)", type(e).__name__)
+        return False, "Unexpected bridge operation error; check server logs"
 
 
 def get_group_info(jid: str) -> Tuple[bool, str, Optional[dict]]:
@@ -803,13 +878,8 @@ def get_group_info(jid: str) -> Tuple[bool, str, Optional[dict]]:
         if not jid or not jid.strip():
             return False, "Group JID is required", None
         response = _api_request("GET", "/group_info", params={"jid": jid})
-        try:
-            result = response.json()
-        except json.JSONDecodeError:
-            return False, f"Error parsing response: {response.text}", None
+        result = _bridge_result(response, require_success=True)
         success = bool(result.get("success", False))
-        if not success:
-            return False, result.get("message", "Unknown response"), None
         info = {
             "name": result.get("name", ""),
             "participants": result.get("participants", []),
@@ -818,10 +888,11 @@ def get_group_info(jid: str) -> Tuple[bool, str, Optional[dict]]:
             "locked": bool(result.get("locked", False)),
         }
         return True, "Group info retrieved", info
-    except requests.RequestException as e:
-        return False, f"Request error: {str(e)}", None
+    except BridgeError as e:
+        return False, str(e), None
     except Exception as e:
-        return False, f"Unexpected error: {str(e)}", None
+        logger.warning("Bridge operation failed (%s)", type(e).__name__)
+        return False, "Unexpected bridge operation error; check server logs", None
 
 
 def request_chat_history(chat_jid: str, count: int = 50) -> Tuple[bool, str]:
@@ -832,19 +903,10 @@ def request_chat_history(chat_jid: str, count: int = 50) -> Tuple[bool, str]:
     try:
         response = _api_request("POST", "/chat/backfill", timeout=SEND_TIMEOUT,
                                 json={"chat_jid": chat_jid, "count": count})
-        try:
-            result = response.json()
-        except ValueError:
-            if response.status_code != 200:
-                return False, f"Bridge request failed (HTTP {response.status_code}): {response.text.strip()[:200]}"
-            return False, "Bridge returned invalid JSON (HTTP 200)"
-        if not isinstance(result, dict):
-            return False, f"Bridge returned an unexpected response (HTTP {response.status_code})"
-        if response.status_code != 200:
-            return False, result.get("error") or result.get("message") or f"Bridge request failed (HTTP {response.status_code})"
+        result = _bridge_result(response, require_success=True)
         return bool(result.get("success")), result.get("message", "Unknown response")
-    except requests.RequestException as e:
-        return False, f"Request error: {e}"
+    except BridgeError as e:
+        return False, str(e)
 
 
 def archive_chat(chat_jid: str, archive: bool) -> Tuple[bool, str]:
@@ -852,15 +914,13 @@ def archive_chat(chat_jid: str, archive: bool) -> Tuple[bool, str]:
         if not chat_jid or not chat_jid.strip():
             return False, "chat_jid is required"
         response = _api_request("POST", "/archive_chat", json={"chat_jid": chat_jid, "archive": archive})
-        try:
-            result = response.json()
-        except json.JSONDecodeError:
-            return False, f"Error parsing response: {response.text}"
+        result = _bridge_result(response, require_success=True)
         return bool(result.get("success", False)), result.get("message", "Unknown response")
-    except requests.RequestException as e:
-        return False, f"Request error: {str(e)}"
+    except BridgeError as e:
+        return False, str(e)
     except Exception as e:
-        return False, f"Unexpected error: {str(e)}"
+        logger.warning("Bridge operation failed (%s)", type(e).__name__)
+        return False, "Unexpected bridge operation error; check server logs"
 
 
 def resolve_contact(phone: str) -> Tuple[bool, str, List[str]]:
@@ -868,17 +928,15 @@ def resolve_contact(phone: str) -> Tuple[bool, str, List[str]]:
         if not phone or not phone.strip():
             return False, "phone is required", []
         response = _api_request("GET", "/resolve_contact", params={"phone": phone})
-        try:
-            result = response.json()
-        except json.JSONDecodeError:
-            return False, f"Error parsing response: {response.text}", []
+        result = _bridge_result(response, require_success=True)
         success = bool(result.get("success", False))
         jids = result.get("jids", []) or []
         return success, result.get("message", "Contact resolved" if success else "Unknown response"), jids
-    except requests.RequestException as e:
-        return False, f"Request error: {str(e)}", []
+    except BridgeError as e:
+        return False, str(e), []
     except Exception as e:
-        return False, f"Unexpected error: {str(e)}", []
+        logger.warning("Bridge operation failed (%s)", type(e).__name__)
+        return False, "Unexpected bridge operation error; check server logs", []
 
 
 def create_poll(chat_jid: str, question: str, options: List[str], selectable_count: int = 1) -> Tuple[bool, str]:
@@ -889,15 +947,10 @@ def create_poll(chat_jid: str, question: str, options: List[str], selectable_cou
         payload = {"chat_jid": chat_jid, "question": question, "options": options,
                    "selectable_count": selectable_count}
         response = _api_request("POST", "/poll", json=payload)
-        try:
-            result = response.json()
-        except json.JSONDecodeError:
-            return False, f"Error parsing response: {response.text}"
-        if result.get("success"):
-            return True, f"Poll sent (message_id: {result.get('message_id', '')})"
-        return False, result.get("error") or result.get("message", "Unknown response")
-    except requests.RequestException as e:
-        return False, f"Request error: {str(e)}"
+        result = _bridge_result(response, require_success=True)
+        return True, f"Poll sent (message_id: {result.get('message_id', '')})"
+    except BridgeError as e:
+        return False, str(e)
 
 
 def send_contact(recipient: str, name: str, phone_number: str) -> Tuple[bool, str]:
@@ -907,15 +960,10 @@ def send_contact(recipient: str, name: str, phone_number: str) -> Tuple[bool, st
             return False, "recipient is required"
         response = _api_request("POST", "/send_contact",
                                 json={"recipient": recipient, "name": name, "phone_number": phone_number})
-        try:
-            result = response.json()
-        except json.JSONDecodeError:
-            return False, f"Error parsing response: {response.text}"
-        if result.get("success"):
-            return True, f"Contact sent (message_id: {result.get('message_id', '')})"
-        return False, result.get("error") or result.get("message", "Unknown response")
-    except requests.RequestException as e:
-        return False, f"Request error: {str(e)}"
+        result = _bridge_result(response, require_success=True)
+        return True, f"Contact sent (message_id: {result.get('message_id', '')})"
+    except BridgeError as e:
+        return False, str(e)
 
 
 def matter_call(path: str, payload: dict) -> dict:
@@ -923,12 +971,9 @@ def matter_call(path: str, payload: dict) -> dict:
     as {"error": ...} so the AI client can read the reason and correct itself."""
     try:
         response = _api_request("POST", path, json=payload)
-        try:
-            return response.json()
-        except json.JSONDecodeError:
-            return {"error": f"Error parsing response: {response.text}"}
-    except requests.RequestException as e:
-        return {"error": f"Request error: {str(e)}"}
+        return _bridge_result(response)
+    except BridgeError as e:
+        return {"error": str(e)}
 
 
 def vote_poll(chat_jid: str, message_id: str, options: List[str]) -> Tuple[bool, str]:
@@ -939,15 +984,10 @@ def vote_poll(chat_jid: str, message_id: str, options: List[str]) -> Tuple[bool,
         if not message_id or not message_id.strip():
             return False, "message_id is required"
         response = _api_request("POST", "/poll_vote", json={"chat_jid": chat_jid, "message_id": message_id, "options": options})
-        try:
-            result = response.json()
-        except json.JSONDecodeError:
-            return False, f"Error parsing response: {response.text}"
-        if result.get("success"):
-            return True, "Vote sent"
-        return False, result.get("error") or result.get("message", "Unknown response")
-    except requests.RequestException as e:
-        return False, f"Request error: {str(e)}"
+        result = _bridge_result(response, require_success=True)
+        return True, "Vote sent"
+    except BridgeError as e:
+        return False, str(e)
 
 
 def get_poll_votes(chat_jid: str, message_id: str) -> Tuple[bool, str, Optional[dict]]:
@@ -957,15 +997,10 @@ def get_poll_votes(chat_jid: str, message_id: str) -> Tuple[bool, str, Optional[
         if not message_id or not message_id.strip():
             return False, "message_id is required", None
         response = _api_request("POST", "/poll_votes", json={"chat_jid": chat_jid, "message_id": message_id})
-        try:
-            result = response.json()
-        except json.JSONDecodeError:
-            return False, f"Error parsing response: {response.text}", None
-        if not result.get("success"):
-            return False, result.get("error") or result.get("message", "Unknown response"), None
+        result = _bridge_result(response, require_success=True)
         return True, "Poll votes retrieved", result
-    except requests.RequestException as e:
-        return False, f"Request error: {str(e)}", None
+    except BridgeError as e:
+        return False, str(e), None
 
 
 def react_to_message(chat_jid: str, message_id: str, emoji: str, from_me: bool = True) -> Tuple[bool, str]:
@@ -986,15 +1021,13 @@ def react_to_message(chat_jid: str, message_id: str, emoji: str, from_me: bool =
             "from_me": from_me,
         }
         response = _api_request("POST", "/react", json=payload)
-        try:
-            result = response.json()
-        except json.JSONDecodeError:
-            return False, f"Error parsing response: {response.text}"
+        result = _bridge_result(response, require_success=True)
         return bool(result.get("success", False)), result.get("message", "Unknown response")
-    except requests.RequestException as e:
-        return False, f"Request error: {str(e)}"
+    except BridgeError as e:
+        return False, str(e)
     except Exception as e:
-        return False, f"Unexpected error: {str(e)}"
+        logger.warning("Bridge operation failed (%s)", type(e).__name__)
+        return False, "Unexpected bridge operation error; check server logs"
 
 
 def edit_message(chat_jid: str, message_id: str, new_text: str, from_me: bool = True) -> Tuple[bool, str]:
@@ -1015,15 +1048,13 @@ def edit_message(chat_jid: str, message_id: str, new_text: str, from_me: bool = 
             "from_me": from_me,
         }
         response = _api_request("POST", "/edit", json=payload)
-        try:
-            result = response.json()
-        except json.JSONDecodeError:
-            return False, f"Error parsing response: {response.text}"
+        result = _bridge_result(response, require_success=True)
         return bool(result.get("success", False)), result.get("message", "Unknown response")
-    except requests.RequestException as e:
-        return False, f"Request error: {str(e)}"
+    except BridgeError as e:
+        return False, str(e)
     except Exception as e:
-        return False, f"Unexpected error: {str(e)}"
+        logger.warning("Bridge operation failed (%s)", type(e).__name__)
+        return False, "Unexpected bridge operation error; check server logs"
 
 
 def delete_message(chat_jid: str, message_id: str, from_me: bool = True) -> Tuple[bool, str]:
@@ -1045,15 +1076,13 @@ def delete_message(chat_jid: str, message_id: str, from_me: bool = True) -> Tupl
             "from_me": from_me,
         }
         response = _api_request("POST", "/revoke", json=payload)
-        try:
-            result = response.json()
-        except json.JSONDecodeError:
-            return False, f"Error parsing response: {response.text}"
+        result = _bridge_result(response, require_success=True)
         return bool(result.get("success", False)), result.get("message", "Unknown response")
-    except requests.RequestException as e:
-        return False, f"Request error: {str(e)}"
+    except BridgeError as e:
+        return False, str(e)
     except Exception as e:
-        return False, f"Unexpected error: {str(e)}"
+        logger.warning("Bridge operation failed (%s)", type(e).__name__)
+        return False, "Unexpected bridge operation error; check server logs"
 
 
 def update_group_participants(group_jid: str, participants: List[str], action: str) -> Tuple[bool, str, List[dict]]:
@@ -1074,34 +1103,30 @@ def update_group_participants(group_jid: str, participants: List[str], action: s
             "action": action,
         }
         response = _api_request("POST", "/group_participants", json=payload)
-        try:
-            result = response.json()
-        except json.JSONDecodeError:
-            return False, f"Error parsing response: {response.text}", []
+        result = _bridge_result(response, require_success=True)
         return (
             bool(result.get("success", False)),
             result.get("message", "Unknown response"),
             result.get("participants", []),
         )
-    except requests.RequestException as e:
-        return False, f"Request error: {str(e)}", []
+    except BridgeError as e:
+        return False, str(e), []
     except Exception as e:
-        return False, f"Unexpected error: {str(e)}", []
+        logger.warning("Bridge operation failed (%s)", type(e).__name__)
+        return False, "Unexpected bridge operation error; check server logs", []
 
 
 def _group_action(method: str, path: str, **kw) -> Tuple[bool, str, dict]:
     """Call a group route; returns (success, message, raw result dict)."""
     try:
         response = _api_request(method, path, **kw)
-        try:
-            result = response.json()
-        except json.JSONDecodeError:
-            return False, f"Error parsing response: {response.text}", {}
+        result = _bridge_result(response, require_success=True)
         return bool(result.get("success", False)), result.get("message", "Unknown response"), result
-    except requests.RequestException as e:
-        return False, f"Request error: {str(e)}", {}
+    except BridgeError as e:
+        return False, str(e), {}
     except Exception as e:
-        return False, f"Unexpected error: {str(e)}", {}
+        logger.warning("Bridge operation failed (%s)", type(e).__name__)
+        return False, "Unexpected bridge operation error; check server logs", {}
 
 
 def get_group_invite_link(group_jid: str, reset: bool = False) -> Tuple[bool, str, Optional[str]]:
@@ -1158,15 +1183,13 @@ def send_chat_presence(chat_jid: str, state: str, media: str = "") -> Tuple[bool
             "media": media,
         }
         response = _api_request("POST", "/chat_presence", json=payload)
-        try:
-            result = response.json()
-        except json.JSONDecodeError:
-            return False, f"Error parsing response: {response.text}"
+        result = _bridge_result(response, require_success=True)
         return bool(result.get("success", False)), result.get("message", "Unknown response")
-    except requests.RequestException as e:
-        return False, f"Request error: {str(e)}"
+    except BridgeError as e:
+        return False, str(e)
     except Exception as e:
-        return False, f"Unexpected error: {str(e)}"
+        logger.warning("Bridge operation failed (%s)", type(e).__name__)
+        return False, "Unexpected bridge operation error; check server logs"
 
 
 def check_whatsapp(phones: List[str]) -> Tuple[bool, str, List[dict]]:
@@ -1180,16 +1203,14 @@ def check_whatsapp(phones: List[str]) -> Tuple[bool, str, List[dict]]:
             return False, "phones list is required", []
         payload = {"phones": phones}
         response = _api_request("POST", "/is_on_whatsapp", json=payload)
-        try:
-            result = response.json()
-        except json.JSONDecodeError:
-            return False, f"Error parsing response: {response.text}", []
+        result = _bridge_result(response, require_success=True)
         return (
             bool(result.get("success", False)),
             result.get("message", "Unknown response"),
             result.get("results", []),
         )
-    except requests.RequestException as e:
-        return False, f"Request error: {str(e)}", []
+    except BridgeError as e:
+        return False, str(e), []
     except Exception as e:
-        return False, f"Unexpected error: {str(e)}", []
+        logger.warning("Bridge operation failed (%s)", type(e).__name__)
+        return False, "Unexpected bridge operation error; check server logs", []

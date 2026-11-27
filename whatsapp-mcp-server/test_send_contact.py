@@ -5,7 +5,7 @@ import whatsapp
 
 
 def resp(body):
-    r = MagicMock()
+    r = MagicMock(status_code=200)
     r.json.return_value = body
     return r
 
@@ -20,9 +20,9 @@ class TestSendContact(unittest.TestCase):
         self.assertEqual(m.call_args.kwargs["json"],
                          {"recipient": "5562911112222", "name": "Joao", "phone_number": "5562999998888"})
 
-    def test_bridge_error_text_is_returned_and_blank_recipient_is_refused(self):
+    def test_bridge_error_is_safe_and_blank_recipient_is_refused(self):
         with patch("whatsapp._api_request", return_value=resp({"error": "invalid phone_number"})):
-            self.assertEqual(whatsapp.send_contact("1", "Joao", "abc"), (False, "invalid phone_number"))
+            self.assertEqual(whatsapp.send_contact("1", "Joao", "abc"), (False, "Bridge operation failed; check the tool arguments and bridge status"))
         with patch("whatsapp._api_request") as m:
             self.assertFalse(whatsapp.send_contact(" ", "Joao", "5562999998888")[0])
             m.assert_not_called()

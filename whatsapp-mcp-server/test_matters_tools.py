@@ -1,13 +1,11 @@
 import unittest
 from unittest.mock import MagicMock, patch
 
-import requests
-
 import whatsapp
 
 
 def resp(body):
-    r = MagicMock()
+    r = MagicMock(status_code=200)
     r.json.return_value = body
     return r
 
@@ -19,13 +17,13 @@ class TestMatterCall(unittest.TestCase):
         self.assertEqual(m.call_args.args, ("POST", "/matters/record"))
         self.assertEqual(m.call_args.kwargs["json"], {"chat_jid": "1@s.whatsapp.net"})
 
-    def test_a_refusal_reaches_the_ai_client_as_text_it_can_act_on(self):
+    def test_a_refusal_is_returned_as_a_safe_error(self):
         with patch("whatsapp._api_request", return_value=resp({"error": "message m1 not found in chat 1@s.whatsapp.net"})):
-            self.assertIn("not found", whatsapp.matter_call("/matters/record", {})["error"])
+            self.assertIn("operation failed", whatsapp.matter_call("/matters/record", {})["error"])
 
     def test_connection_failure_is_an_error_not_an_exception(self):
-        with patch("whatsapp._api_request", side_effect=requests.RequestException("down")):
-            self.assertIn("down", whatsapp.matter_call("/matters/list", {})["error"])
+        with patch("whatsapp._api_request", side_effect=whatsapp.BridgeError("Bridge unavailable")):
+            self.assertIn("unavailable", whatsapp.matter_call("/matters/list", {})["error"])
 
 
 if __name__ == "__main__":
