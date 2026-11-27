@@ -2,6 +2,7 @@ package main
 
 import (
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -203,12 +204,47 @@ func registerDraftRoutes(store *MessageStore, client *whatsmeow.Client) {
 		d, err := listDrafts(db, r)
 		return map[string][]APIDraft{"drafts": d}, err
 	}))
-	http.HandleFunc("/api/drafts/approve", matterRoute(func(r ApproveDraftRequest) (APIDraft, error) {
-		return approveDraft(db, r, func(chat, text string) (bool, string) {
-			return sendWhatsAppMessage(client, store, chat, text, "", "", nil)
-		}, time.Now())
-	}))
+	http.HandleFunc("/api/drafts/approve", handleApproveDraft(store, client))
 	http.HandleFunc("/api/drafts/discard", matterRoute(func(r DiscardDraftRequest) (APIDraft, error) {
 		return discardDraft(db, r, time.Now())
 	}))
+}
+
+func handleApproveDraft(store *MessageStore, client *whatsmeow.Client) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			writeJSONError(w, http.StatusMethodNotAllowed, "Method not allowed")
+			return
+		}
+		var req ApproveDraftRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeJSONError(w, http.StatusBadRequest, "Invalid request format")
+			return
+		}
+		var sendErr error
+		resp, err := approveDraft(store.db, req, func(chat, text string) (bool, string) {
+			var message string
+			message, sendErr = sendWhatsAppMessage(r.Context(), client, store, chat, text, "", "", nil)
+			if sendErr != nil {
+				return false, sendErr.Error()
+			}
+			return true, message
+		}, time.Now())
+		if sendErr != nil {
+			err = fmt.Errorf("send failed, the draft is still pending: %w", sendErr)
+		}
+		if err != nil {
+			if writeSendRateError(w, err) {
+				return
+			}
+			status := http.StatusInternalServerError
+			var bad *errInvalidRequest
+			if errors.As(err, &bad) {
+				status = http.StatusBadRequest
+			}
+			writeJSONError(w, status, err.Error())
+			return
+		}
+		writeJSON(w, resp)
+	}
 }

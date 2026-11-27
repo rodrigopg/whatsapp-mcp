@@ -284,7 +284,7 @@ func TestHandleRevoke(t *testing.T) {
 // whitelist, and the nil-client 503 path (which the action/JID checks in the
 // handler must run before, so it's reached deterministically here).
 func TestHandleGroupParticipants(t *testing.T) {
-	handler := handleGroupParticipants(nil)
+	handler := handleGroupParticipants(nil, nil)
 
 	t.Run("non-POST returns 405", func(t *testing.T) {
 		rec := doHandlerRequest(t, handler, http.MethodGet, nil)

@@ -5,6 +5,7 @@ package main
 // /api/download/file. /api/send (media_path) and /api/download stay for local clients.
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -35,7 +36,7 @@ func checkUploadName(name string) error {
 // sendFileHandler serves POST /api/send/file?recipient=&filename=[&message=] with the file as the
 // raw body (no multipart: net/http would spill large parts to the temp folder). The body is capped
 // at maxMediaBytes and never written to disk.
-func sendFileHandler(send func(recipient, message string, f *outboundFile) (bool, string)) http.HandlerFunc {
+func sendFileHandler(send func(ctx context.Context, recipient, message string, f *outboundFile) (string, error)) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -65,7 +66,14 @@ func sendFileHandler(send func(recipient, message string, f *outboundFile) (bool
 			return
 		}
 		fmt.Printf("Received request to send file %q (%d bytes) to %q\n", name, len(data), recipient)
-		success, message := send(recipient, q.Get("message"), &outboundFile{name: name, data: data})
+		message, err := send(r.Context(), recipient, q.Get("message"), &outboundFile{name: name, data: data})
+		if writeSendRateError(w, err) {
+			return
+		}
+		success := err == nil
+		if !success {
+			message = err.Error()
+		}
 		w.Header().Set("Content-Type", "application/json")
 		if !success {
 			w.WriteHeader(http.StatusInternalServerError)

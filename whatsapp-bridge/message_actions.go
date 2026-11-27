@@ -18,6 +18,7 @@ type messageActionClient interface {
 	IsConnected() bool
 	OwnID() *types.JID
 	NormalizeChat(types.JID) types.JID
+	OutboundChatJIDs(context.Context, types.JID) []types.JID
 	BuildReaction(types.JID, types.JID, types.MessageID, string) *waProto.Message
 	BuildRevoke(types.JID, types.JID, types.MessageID) *waProto.Message
 	SendMessage(context.Context, types.JID, *waProto.Message, ...whatsmeow.SendRequestExtra) (whatsmeow.SendResponse, error)
@@ -35,6 +36,10 @@ func (c whatsmeowActions) OwnID() *types.JID {
 
 func (c whatsmeowActions) NormalizeChat(chat types.JID) types.JID {
 	return resolveToPN(c.Client, chat)
+}
+
+func (c whatsmeowActions) OutboundChatJIDs(ctx context.Context, chat types.JID) []types.JID {
+	return outboundChatJIDs(ctx, c.Client, chat)
 }
 
 func (c whatsmeowActions) GroupAuthor(ctx context.Context, group, author types.JID) (types.JID, error) {
@@ -98,6 +103,9 @@ func groupMessageSender(store *MessageStore, chat types.JID, id string) (types.J
 
 // writeActionError answers 400 for a request the bridge cannot act on and 500 for a store failure.
 func writeActionError(w http.ResponseWriter, err error) {
+	if writeSendRateError(w, err) {
+		return
+	}
 	status := http.StatusInternalServerError
 	var bad *errInvalidRequest
 	if errors.As(err, &bad) {

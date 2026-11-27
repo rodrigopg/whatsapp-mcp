@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -23,9 +24,9 @@ func uploadRequest(query url.Values, body []byte) *http.Request {
 
 func TestSendFileUploadsBytesNotPaths(t *testing.T) {
 	var got []sentFile
-	h := sendFileHandler(func(recipient, message string, f *outboundFile) (bool, string) {
+	h := sendFileHandler(func(_ context.Context, recipient, message string, f *outboundFile) (string, error) {
 		got = append(got, sentFile{recipient, message, f})
-		return true, "Message sent to " + recipient
+		return "Message sent to " + recipient, nil
 	})
 	body := []byte("%PDF-1.1 fake")
 	w := httptest.NewRecorder()
@@ -61,7 +62,7 @@ func TestSendFileRefusals(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			called := false
-			h := sendFileHandler(func(string, string, *outboundFile) (bool, string) { called = true; return true, "" })
+			h := sendFileHandler(func(context.Context, string, string, *outboundFile) (string, error) { called = true; return "", nil })
 			w := httptest.NewRecorder()
 			h(w, uploadRequest(tc.query, tc.body))
 			if w.Code != tc.code || called {
@@ -78,8 +79,8 @@ func TestSendFileRefusals(t *testing.T) {
 
 // The real send path refuses when WhatsApp is not connected, after the upload was accepted.
 func TestSendFileReachesSendContent(t *testing.T) {
-	h := sendFileHandler(func(recipient, message string, f *outboundFile) (bool, string) {
-		return sendWhatsAppContent(nil, nil, recipient, message, f, "", nil)
+	h := sendFileHandler(func(ctx context.Context, recipient, message string, f *outboundFile) (string, error) {
+		return sendWhatsAppContent(ctx, nil, nil, recipient, message, f, "", nil)
 	})
 	w := httptest.NewRecorder()
 	h(w, uploadRequest(url.Values{"recipient": {"1"}, "filename": {"a.pdf"}}, []byte("x")))

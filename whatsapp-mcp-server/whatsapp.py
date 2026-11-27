@@ -1139,7 +1139,13 @@ def update_group_settings(
             payload[key] = val
     if len(payload) == 1:
         return False, "at least one of name, topic, announce, locked is required"
-    ok, msg, _ = _group_action("POST", "/group_settings", json=payload)
+    ok, msg, res = _group_action("POST", "/group_settings", json=payload)
+    # A partial failure (for example a rate limit between two settings) reports what already changed.
+    if isinstance(res, dict) and "applied" in res:
+        applied = res["applied"]
+        fields = [key for key in ("name", "topic", "announce", "locked")
+                  if isinstance(applied, list) and key in applied]
+        msg += f"; applied fields: {', '.join(fields) or 'none'}"
     return ok, msg
 
 

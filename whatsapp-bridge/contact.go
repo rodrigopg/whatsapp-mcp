@@ -84,7 +84,13 @@ func handleSendContact(client *whatsmeow.Client, store *MessageStore) http.Handl
 			DisplayName: proto.String(name),
 			Vcard:       proto.String(buildContactVCard(name, digits)),
 		}}
-		resp, err := client.SendMessage(context.Background(), chatJID, msg)
+		done, err := beginOutbound(r.Context(), store, outboundChatJIDs(r.Context(), client, chatJID)...)
+		if err != nil {
+			writeActionError(w, err)
+			return
+		}
+		defer done()
+		resp, err := client.SendMessage(context.WithoutCancel(r.Context()), chatJID, msg)
 		if err != nil {
 			writeJSONError(w, http.StatusInternalServerError, fmt.Sprintf("SendMessage error: %v", err))
 			return
