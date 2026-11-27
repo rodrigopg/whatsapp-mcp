@@ -2005,7 +2005,7 @@ func createWhatsAppGroup(ctx context.Context, client *whatsmeow.Client, messageS
 		createReq.GroupLinkedParent.LinkedParentJID = parentJID
 	}
 
-	done, err := beginOutbound(ctx, messageStore, types.EmptyJID)
+	done, err := beginOutboundTo(ctx, client, messageStore, participantJIDs)
 	if err != nil {
 		return CreateGroupResponse{}, err
 	}

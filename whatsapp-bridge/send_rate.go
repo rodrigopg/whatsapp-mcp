@@ -185,6 +185,18 @@ func beginOutbound(ctx context.Context, store *MessageStore, chats ...types.JID)
 	})
 }
 
+// A new group reaches every participant at once: it is a first contact only when one of them has no history.
+func beginOutboundTo(ctx context.Context, client *whatsmeow.Client, store *MessageStore, contacts []types.JID) (func(), error) {
+	return outboundLimiter.acquire(ctx, func(ctx context.Context) (bool, error) {
+		for _, contact := range contacts {
+			if first, err := outboundFirstContact(ctx, store, outboundChatJIDs(ctx, client, contact)...); first || err != nil {
+				return first, err
+			}
+		}
+		return len(contacts) == 0, nil
+	})
+}
+
 func writeSendRateError(w http.ResponseWriter, err error) bool {
 	var limited *sendRateError
 	if !errors.As(err, &limited) {

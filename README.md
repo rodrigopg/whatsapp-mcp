@@ -169,7 +169,7 @@ The voice model is never part of this repo. For Brazilian Portuguese, [`rhasspy/
 - `WHATSAPP_API_BASE_URL` env var — point the Python MCP server at a non-default bridge URL
 - `WHATSAPP_API_AUTH_TOKEN` env var — bearer token the MCP server sends as `Authorization: Bearer <token>`; required if the bridge's `API_AUTH_TOKEN` is set
 - `WHATSAPP_SEND_INTERVAL_MS` (bridge, default `250`) sets the minimum gap in milliseconds between recipient-visible outbound actions across all chats. `0` disables this gap.
-- `WHATSAPP_FIRST_CONTACT_INTERVAL_MS` (bridge, default `30000`) adds a stricter gap between actions in chats with no messages in local history. `0` disables this extra gap. New groups and joins by invite also use it. Invalid or negative interval values stop startup.
+- `WHATSAPP_FIRST_CONTACT_INTERVAL_MS` (bridge, default `30000`) adds a stricter gap between actions in chats with no messages in local history. `0` disables this extra gap. Joins by invite also use it, and so does a new group when one of its participants has no messages in local history. Invalid or negative interval values stop startup.
 - `BIND_ADDR` env var — change the bind address of the REST API (see [Security](#security) above for the auth requirement this triggers)
 - `API_AUTH_TOKEN` env var (bridge) — bearer token required on all `/api/*` requests once `BIND_ADDR` is non-loopback
 - `API_ALLOWED_HOSTS` env var (bridge) — only for a bridge running without `API_AUTH_TOKEN`: extra host names (comma separated, no port) accepted in the `Host` header of `/api/*` requests, when a local client reaches the bridge through a name other than `localhost`, `127.0.0.1` or `[::1]` (a local reverse proxy, for example)
