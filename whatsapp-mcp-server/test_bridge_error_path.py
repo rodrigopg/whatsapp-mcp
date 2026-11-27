@@ -73,6 +73,8 @@ class AllToolBridgeErrors(unittest.IsolatedAsyncioTestCase):
             arguments = {name: values[name] for name in tool.inputSchema.get("required", [])}
             if tool.name == "update_group_settings":
                 arguments["name"] = "test"
+            if tool.name == "send_file":
+                arguments["media_path"] = "test.ogg"  # optional since upload_id (#118)
             for mock_args, expected in cases:
                 if tool.name == "get_message_context" and expected == "Invalid bridge request":
                     expected = "not found"  # the bridge answers an unknown message ID with HTTP 400
