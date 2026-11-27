@@ -600,6 +600,23 @@ def _send_own_file(recipient: str, path: str) -> Tuple[bool, str]:
     return _send_media(recipient, os.path.basename(path), data, path)
 
 
+def send_uploaded_file(recipient: str, path: str, filename: str) -> Tuple[bool, str]:
+    """Send a file the user uploaded through a web upload link (media_links), then delete it."""
+    if not recipient:
+        return False, "Recipient must be provided"
+    try:
+        with open(path, "rb") as f:
+            data = f.read()
+        return _send_media(recipient, filename, data, path)
+    except OSError:
+        return False, "The uploaded file could not be read"
+    finally:
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+
+
 def send_file(recipient: str, media_path: str) -> Tuple[bool, str]:
     if not recipient:
         return False, "Recipient must be provided"
